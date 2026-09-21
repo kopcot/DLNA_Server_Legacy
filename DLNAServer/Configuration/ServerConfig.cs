@@ -1,6 +1,7 @@
 ﻿using DLNAServer.Helpers.Serializations;
 using DLNAServer.Types.DLNA;
 using System.Reflection;
+using System.Text;
 using System.Text.Json.Serialization;
 
 namespace DLNAServer.Configuration
@@ -56,7 +57,10 @@ namespace DLNAServer.Configuration
         public bool ServerAlwaysRecreateDatabaseAtStart { get; set; } = false;
         public ulong ServerDatabaseMemoryMapLimitInMBytes { get; set; } = 0;
         public ulong ServerDatabaseCacheLimitInMBytes { get; set; } = 0;
+        public bool ServerDatabaseUseTempStoreAsMemory { get; set; } = false;
         public bool ServerIgnoreRequestedCountAttributeFromRequest { get; set; } = false;
+        public uint ServerMinRequestedCountAttributeFromRequest { get; set; } = 1;
+        public uint ServerMaxRequestedCountAttributeFromRequest { get; set; } = 100;
         public uint ServerMaxDegreeOfParallelism { get; set; } = Math.Max((uint)Environment.ProcessorCount - 1, 1);
         public uint ServerDelayAfterUnsuccessfulSendSSDPMessageInMin { get; set; } = 10;
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
@@ -91,6 +95,8 @@ namespace DLNAServer.Configuration
         public Dictionary<string, KeyValuePair<DlnaMime, string?>> MediaFileExtensions { get; set; } = new Dictionary<string, KeyValuePair<DlnaMime, string?>>()
             {
                 {".mp4",  new KeyValuePair<DlnaMime, string?>(DlnaMime.VideoMp4,            DlnaMime.VideoMp4.ToMainProfileNameString()         )},
+                {".mpg",  new KeyValuePair<DlnaMime, string?>(DlnaMime.VideoMpeg,           DlnaMime.VideoMpeg.ToMainProfileNameString()        )},
+                {".mpeg", new KeyValuePair<DlnaMime, string?>(DlnaMime.VideoMpeg,           DlnaMime.VideoMpeg.ToMainProfileNameString()        )},
                 {".avi",  new KeyValuePair<DlnaMime, string?>(DlnaMime.VideoXMsvideo,       DlnaMime.VideoXMsvideo.ToMainProfileNameString()    )},
                 {".mkv",  new KeyValuePair<DlnaMime, string?>(DlnaMime.VideoXMatroska,      DlnaMime.VideoXMatroska.ToMainProfileNameString()   )},
                 {".mov",  new KeyValuePair<DlnaMime, string?>(DlnaMime.VideoQuicktime,      DlnaMime.VideoQuicktime.ToMainProfileNameString()   )},
@@ -127,6 +133,7 @@ namespace DLNAServer.Configuration
         /// </summary>
         public string SubFolderForThumbnail { get; set; } = ".@__thumb";
 
+        private readonly StringBuilder stringBuilderServerSignature = new(128);
         private string GenerateServerSignature()
         {
             var os = Environment.OSVersion;
@@ -149,8 +156,17 @@ namespace DLNAServer.Configuration
             var versionMajor = version?.Major ?? -1;
             var versionMinor = version?.Minor ?? -1;
             var bitVersion = IntPtr.Size * 8;
-            var signature = $"{platform}/{bitVersion}bit/{os.Version.Major}.{os.Version.Minor} UPnP/1.0 DLNADOC/1.5 zen_dlna/{versionMajor}.{versionMinor}/{ServerPort}";
-            return string.Intern(signature);
+
+            stringBuilderServerSignature.Clear();
+            stringBuilderServerSignature.Append(platform).Append('/')
+                .Append(bitVersion).Append("bit/")
+                .Append(os.Version.Major).Append('.')
+                .Append(os.Version.Minor).Append(" UPnP/1.0 DLNADOC/1.5 zen_dlna/")
+                .Append(versionMajor).Append('.')
+                .Append(versionMinor).Append('/')
+                .Append(ServerPort);
+
+            return string.Intern(stringBuilderServerSignature.ToString());
         }
 
         #region Dispose

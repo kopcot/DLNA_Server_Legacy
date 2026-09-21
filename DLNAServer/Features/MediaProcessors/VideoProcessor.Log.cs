@@ -8,5 +8,9 @@
         partial void InformationSetThumbnail(string file);
         [LoggerMessage(3, LogLevel.Debug, "Created thumbnail as '{file}' in {duration,6:0.00}(ms)")]
         partial void DebugCreateThumbnail(string file, double duration);
+        [LoggerMessage(4, LogLevel.Warning, "Set failed metadata as checked for file: '{file}'")]
+        partial void WarningSetMetadataFailed(string file);
+        [LoggerMessage(5, LogLevel.Warning, "Set failed thumbnail as checked for file: '{file}'")]
+        partial void WarningSetThumbnailFailed(string file);
     }
 }

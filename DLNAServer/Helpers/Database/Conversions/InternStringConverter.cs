@@ -2,7 +2,7 @@
 
 namespace DLNAServer.Helpers.Database.Conversions
 {
-    public class InternStringConverter : ValueConverter<string?, string?>
+    public sealed class InternStringConverter : ValueConverter<string?, string?>
     {
         public InternStringConverter()
             : base(

@@ -90,6 +90,13 @@ namespace DLNAServer
                         .AddEnvironmentVariables();
                 _ = builder.WebHost.UseKestrel(options: static (opt) =>
                 {
+                    opt.AddServerHeader = false;
+                    opt.Limits.KeepAliveTimeout = TimeSpanValues.TimeMin5;
+                    opt.Limits.MaxRequestBufferSize = 64 * 1024;
+                    opt.Limits.MaxConcurrentConnections = 1000;
+                    opt.Limits.MaxConcurrentUpgradedConnections = 1000;
+                    ThreadPool.SetMinThreads(50, 50);
+
                     opt.ListenAnyIP(
                         port: (int)ServerConfig.Instance.ServerPort,
                         configure: static (cfg) =>
@@ -123,9 +130,15 @@ namespace DLNAServer
                     }
                     _ = serilogConfig.WriteTo.File(
                             path: "logs/appLog.txt",
+                            outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss:fff} {Level:u3}] [{SourceContext}] {Message}{NewLine}{Exception}",
                             rollingInterval: RollingInterval.Day,
-                            retainedFileTimeLimit: TimeSpanValues.TimeDays7,
-                            outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss:fff} {Level:u3}] [{SourceContext}] {Message}{NewLine}{Exception}");
+                            retainedFileTimeLimit: TimeSpanValues.TimeDays7);
+                    _ = serilogConfig.WriteTo.File(
+                            path: "logs/appErrorLog.txt",
+                            restrictedToMinimumLevel: LogEventLevel.Error,
+                            outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss:fff} {Level:u3}] [{SourceContext}]{NewLine}Message: {Message}{NewLine}Exception: {Exception}TraceId: {TraceId}{NewLine}SpanId: {SpanId}{NewLine}{NewLine}",
+                            rollingInterval: RollingInterval.Day,
+                            retainedFileTimeLimit: TimeSpanValues.TimeDays7);
                     _ = logging.AddSerilog(serilogConfig.CreateLogger());
 
                     _ = logging.Configure(static (options) =>
@@ -139,6 +152,7 @@ namespace DLNAServer
             }
 
             _ = builder.Services.AddControllers();
+            _ = builder.Services.AddResponseCaching();
             _ = builder.Services.AddHttpContextAccessor();
             _ = builder.Services.AddResponseCompression(static (options) =>
             {
@@ -147,14 +161,16 @@ namespace DLNAServer
                 options.EnableForHttps = true;
             });
 
-            _ = builder.Services.AddDbContextPool<DlnaDbContext>(
+            //_ = builder.Services.AddDbContextPool<DlnaDbContext>(
+            _ = builder.Services.AddDbContext<DlnaDbContext>(
                 optionsAction: (serviceProvider, options) =>
                 {
                     var sqliteLogger = new LoggerConfiguration()
                         .WriteTo.File(
                                 path: "logs/sqliteLog.txt",
                                 rollingInterval: RollingInterval.Day,
-                                retainedFileTimeLimit: TimeSpanValues.TimeDays7)
+                                retainedFileTimeLimit: TimeSpanValues.TimeDays7,
+                                rollOnFileSizeLimit: true)
                         .CreateLogger();
                     _ = options
                         .UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection"))
@@ -181,8 +197,10 @@ namespace DLNAServer
                             }
                         }
                         , LogLevel.Debug);
-                },
-                poolSize: 64);
+                });
+            //},
+            //poolSize: 64);
+
             _ = builder.Services.AddSingleton<SQLitePragmaInterceptor>();
             _ = builder.Services.AddSingleton<PerformanceInterceptor>(static (e) =>
                 new PerformanceInterceptor(
@@ -208,7 +226,9 @@ namespace DLNAServer
             _ = builder.Services.AddMemoryCache(static (option) =>
             {
                 // Max half of memory or from config
-                option.SizeLimit = Math.Min(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / 2, (long)ServerConfig.Instance.MaxUseMemoryCacheInMBytes * (1024 * 1024));
+                option.SizeLimit = Math.Min(
+                    val1: GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / 2,
+                    val2: (long)ServerConfig.Instance.MaxUseMemoryCacheInMBytes * (1024 * 1024));
                 option.Clock = new Microsoft.Extensions.Internal.SystemClock();
                 option.ExpirationScanFrequency = TimeSpanValues.TimeMs500;
                 option.TrackStatistics = true;
@@ -234,7 +254,8 @@ namespace DLNAServer
             _ = builder.Services.AddSingleton<IFFmpegService, FFmpegService>();
 
             _ = builder.Services.AddScopedLazyService<IContentExplorerManager, ContentExplorerManager>();
-            _ = builder.Services.AddSingleton<IFileMemoryCacheManager, FileMemoryCacheManager>();
+            _ = builder.Services.AddSingleton<IFileMemoryCacheHandler, FileMemoryCacheHandler>();
+            _ = builder.Services.AddScopedLazyService<IFileMemoryCacheManager, FileMemoryCacheManager>();
             _ = builder.Services.AddSingleton<IFileWatcherHandler, FileWatcherHandler>();
             _ = builder.Services.AddScopedLazyService<IFileWatcherManager, FileWatcherManager>();
             _ = builder.Services.AddTransient<IFileService, FileService>();
@@ -267,9 +288,18 @@ namespace DLNAServer
                     _ = builder.Services.AddHostedService<SSDPListenerService>();
                 }
                 {
+                    _ = builder.Services.AddHostedService<FileMemoryCacheService>();
+                }
+                {
                     _ = builder.Services.AddHostedService<FileWatcherService>();
                 }
             }
+
+            _ = builder.Host.UseDefaultServiceProvider(services =>
+            {
+                services.ValidateScopes = true;
+                services.ValidateOnBuild = true;
+            });
 
             var app = builder.Build();
 
@@ -282,12 +312,14 @@ namespace DLNAServer
             //app.UseHttpsRedirection();
             //app.UseAuthorization();
             //
-            //app.UseResponseCaching();
             //app.UseRouting(); 
 
             //use only for testing, taking too much memory with each streaming file 
             //app.UseMiddleware<PeekHeadersAndBodyMiddleware>();
 
+            _ = app.UseResponseCaching();
+            _ = app.UseMiddleware<LoggingConnectionRequestInfo>();
+            _ = app.UseMiddleware<ExceptionMiddleware>();
             _ = app.UseMiddleware<BlockAllMiddleware>();
             _ = app.UseResponseCompression();
 

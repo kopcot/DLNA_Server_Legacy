@@ -4,7 +4,7 @@ using System.Xml;
 
 namespace DLNAServer.SOAP
 {
-    public class CustomEnvelopeMessage : CustomMessage
+    public sealed class CustomEnvelopeMessage : CustomMessage
     {
         public CustomEnvelopeMessage() : base()
         {
@@ -28,7 +28,7 @@ namespace DLNAServer.SOAP
                 writer.WriteStartDocument();
             }
 
-            string prefix = string.Intern(Version.Envelope.NamespacePrefix(NamespaceManager));
+            string prefix = string.Intern(Version.Envelope.NamespacePrefix(XmlNamespaceLookup));
             string envelopeNamespace = string.Intern(Version.Envelope.Namespace());
 
             const string envelope = "Envelope";
@@ -39,11 +39,11 @@ namespace DLNAServer.SOAP
             writer.WriteAttributeString(prefix, encodingStyle, null, encodingStyleUri);
 
             const string xsd = "xsd";
-            string xsdPrefix = string.Intern(Namespaces.AddNamespaceIfNotAlreadyPresentAndGetPrefix(NamespaceManager, xsd, Namespaces.XMLNS_XSD));
+            string xsdPrefix = string.Intern(Namespaces.AddNamespaceIfNotAlreadyPresentAndGetPrefix(XmlNamespaceLookup, xsd, Namespaces.XMLNS_XSD));
             writer.WriteXmlnsAttribute(xsdPrefix, Namespaces.XMLNS_XSD);
 
             const string xsi = "xsi";
-            string xsiPrefix = string.Intern(Namespaces.AddNamespaceIfNotAlreadyPresentAndGetPrefix(NamespaceManager, xsi, Namespaces.XMLNS_XSI));
+            string xsiPrefix = string.Intern(Namespaces.AddNamespaceIfNotAlreadyPresentAndGetPrefix(XmlNamespaceLookup, xsi, Namespaces.XMLNS_XSI));
             writer.WriteXmlnsAttribute(xsiPrefix, Namespaces.XMLNS_XSI);
 
             if (AdditionalEnvelopeXmlnsAttributes != null)

@@ -2,6 +2,7 @@
 using DLNAServer.Helpers.Logger;
 using DLNAServer.SOAP.Constants;
 using Microsoft.AspNetCore.Mvc;
+using System;
 using System.Text;
 using System.Xml;
 
@@ -9,7 +10,7 @@ namespace DLNAServer.Controllers.Media
 {
     [Route("[controller]")]
     [ApiController]
-    public class MediaController : ControllerBase
+    public sealed class MediaController : ControllerBase
     {
         private readonly ILogger<MediaController> _logger;
         private readonly ServerConfig _serverConfig;
@@ -22,6 +23,7 @@ namespace DLNAServer.Controllers.Media
         }
         [HttpGet("description.xml")]
         [Route("/")]
+        [ResponseCache(Duration = 3600, Location = ResponseCacheLocation.Any, NoStore = false, VaryByQueryKeys = ["uuid"])]
         public IActionResult GetDescription([FromQuery] string? uuid)
         {
             LoggerHelper.LogDebugConnectionInformation(

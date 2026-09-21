@@ -41,11 +41,12 @@ namespace DLNAServer.FileServer
             using (var scope = _serviceScopeFactory.CreateScope())
             {
                 await TerminateFileMemoryCacheManager(scope);
-                await TerminateFileWatcherHandler(scope);
+                await TerminateFileMemoryCacheHandler(scope);
                 await TerminateContentExplorer(scope);
                 await TerminateDatabase(scope);
                 await TerminateUPNPDevices(scope);
                 await TerminateFileWatcherManager(scope);
+                await TerminateFileWatcherHandler(scope);
                 await TerminateAudioProcessor(scope);
                 await TerminateVideoProcessor(scope);
                 await TerminateImageProcessor(scope);
@@ -86,14 +87,14 @@ namespace DLNAServer.FileServer
             InformationInstanceInitialized("UPNPDevices Devices");
         }
 
-        private Task ShowGeneralInfo(IServiceScope scope)
+        private ValueTask ShowGeneralInfo(IServiceScope scope)
         {
             var serverConfig = scope.ServiceProvider.GetRequiredService<ServerConfig>();
             InformationServerName(serverConfig.ServerFriendlyName);
             InformationSourceFolders(string.Join(";", serverConfig.SourceFolders));
             InformationExtensions(string.Join(";", serverConfig.MediaFileExtensions.Select(static (e) => (e.Key, e.Value.Key.ToMimeString(), e.Value.Value)).ToArray()));
 
-            return Task.CompletedTask;
+            return ValueTask.CompletedTask;
         }
         private async Task InitDatabase(IServiceScope scope, CancellationToken cancellationToken)
         {
@@ -152,8 +153,15 @@ namespace DLNAServer.FileServer
         {
             var fileMemoryCacheManager = scope.ServiceProvider.GetRequiredService<IFileMemoryCacheManager>();
             await fileMemoryCacheManager.TerminateAsync();
-            DebugInstanceTerminated("File memory cache");
+            DebugInstanceTerminated("File memory cache manager");
         }
+        private async Task TerminateFileMemoryCacheHandler(IServiceScope scope)
+        {
+            var fileMemoryCacheHandler = scope.ServiceProvider.GetRequiredService<IFileMemoryCacheHandler>();
+            await fileMemoryCacheHandler.TerminateAsync();
+            DebugInstanceTerminated("File memory cache handler");
+        }
+
         private async Task TerminateUPNPDevices(IServiceScope scope)
         {
             var uPNPDevices = scope.ServiceProvider.GetRequiredService<IUPNPDevices>();

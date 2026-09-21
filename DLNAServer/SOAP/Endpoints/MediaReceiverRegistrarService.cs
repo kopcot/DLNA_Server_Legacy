@@ -2,7 +2,7 @@
 
 namespace DLNAServer.SOAP.Endpoints
 {
-    public class MediaReceiverRegistrarService : IMediaReceiverRegistrarService
+    public sealed class MediaReceiverRegistrarService : IMediaReceiverRegistrarService
     {
         private readonly ILogger<MediaReceiverRegistrarService> _logger;
         public MediaReceiverRegistrarService(

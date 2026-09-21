@@ -6,14 +6,17 @@ using DLNAServer.Features.FileWatcher.Interfaces;
 using DLNAServer.Features.MediaContent.Interfaces;
 using DLNAServer.Features.MediaProcessors.Interfaces;
 using DLNAServer.Helpers.Database;
+using DLNAServer.Helpers.Files;
 using DLNAServer.Helpers.Logger;
 using DLNAServer.Types.DLNA;
+using Microsoft.EntityFrameworkCore;
+using System.Net.NetworkInformation;
 
 namespace DLNAServer.Features.FileWatcher
 {
     public partial class FileWatcherManager : IFileWatcherManager
     {
-        private ILogger<FileWatcherManager> _logger;
+        private readonly ILogger<FileWatcherManager> _logger;
         private readonly ServerConfig _serverConfig;
         private readonly IFileWatcherHandler _fileWatcherHandler;
         private readonly IFileMemoryCacheManager _fileMemoryCacheManager;
@@ -70,7 +73,7 @@ namespace DLNAServer.Features.FileWatcher
 
             return Task.CompletedTask;
         }
-        private Task InitWatchingFilesAtSourceFoldersAsync()
+        private ValueTask InitWatchingFilesAtSourceFoldersAsync()
         {
             if (!_areFileWatcherEventsAdded)
             {
@@ -82,7 +85,7 @@ namespace DLNAServer.Features.FileWatcher
                 _areFileWatcherEventsAdded = true;
             }
 
-            return Task.CompletedTask;
+            return ValueTask.CompletedTask;
         }
         public async Task HandleFileCreatedChanged(string fileFullPath, WatcherChangeTypes eventAction, DateTime eventTimestamp)
         {
@@ -101,7 +104,7 @@ namespace DLNAServer.Features.FileWatcher
                     DebugAddToDatabase(eventAction, fileInfo.FullName);
 
                     var dlnaMime = GetConfiguredDlnaMimeFromFileExtension(fileInfo.Extension);
-                    var inputFile = new Dictionary<DlnaMime, IEnumerable<string>> { { dlnaMime, [fileInfo.FullName] } };
+                    var inputFile = new Dictionary<DlnaMime, ReadOnlyMemory<string>> { { dlnaMime, new ReadOnlyMemory<string>([fileInfo.FullName]) } };
 
                     await _contentExplorerManager.RefreshFoundFilesAsync(inputFile, shouldBeAdded: true);
                 }
@@ -152,7 +155,7 @@ namespace DLNAServer.Features.FileWatcher
                     {
                         WarningFileExtensionUndefined(eventAction, fileInfo.Extension, fileInfo.FullName);
                     }
-                    Dictionary<DlnaMime, IEnumerable<string>> inputFile = new() { { dlnaMime, [fileInfo.FullName] } };
+                    Dictionary<DlnaMime, ReadOnlyMemory<string>> inputFile = new() { { dlnaMime, new ReadOnlyMemory<string>([fileInfo.FullName]) } };
 
                     await _contentExplorerManager.RefreshFoundFilesAsync(inputFile, shouldBeAdded: true);
                 }
@@ -169,6 +172,11 @@ namespace DLNAServer.Features.FileWatcher
             await HandleFileEvent(async (eventAction, fileInfo, __, ___) =>
             {
                 DebugFileRemove(eventAction, fileInfo.FullName);
+                if (fileInfo.Exists)
+                {
+                    return;
+                }
+
                 var files = (await _fileRepository.GetAllByPathFullNameAsync(fileInfo.FullName, useCachedResult: false)).AsArray();
                 if (files == null || files.Length == 0)
                 {
@@ -186,19 +194,19 @@ namespace DLNAServer.Features.FileWatcher
             }, eventAction, fileFullPath, null, eventTimestamp);
         }
 
-        private static async Task PrepareToRemoveEntity(IFileRepository fileRepository, IThumbnailRepository thumbnailRepository, FileEntity[] files)
+        private async Task PrepareToRemoveEntity(IFileRepository fileRepository, IThumbnailRepository thumbnailRepository, FileEntity[] files)
         {
             if (files.Length == 0)
             {
                 return;
             }
 
-            var thumbnailEntitiesIds = files
-                .Where(static (f) => f.ThumbnailId.HasValue)
-                .Select(static (f) => f.ThumbnailId!.Value)
-                .ToArray();
+            var thumbnailEntitiesIds = new HashSet<Guid>(
+                files
+                    .Where(static f => f.ThumbnailId.HasValue)
+                    .Select(static f => f.ThumbnailId!.Value));
 
-            if (thumbnailEntitiesIds.Length > 0)
+            if (thumbnailEntitiesIds.Count > 0)
             {
                 var thumbnailEntities = (await thumbnailRepository.GetAllByIdsAsync(thumbnailEntitiesIds)).AsArray();
 
@@ -216,19 +224,19 @@ namespace DLNAServer.Features.FileWatcher
             files.AsParallel()
                 .Where(static (nef) => nef.AudioMetadata != null)
                 .Select(static (nef) => nef.AudioMetadata!)
-                .ForAll(td => fileRepository.MarkForDelete(td));
+                .ForAll(nef => fileRepository.MarkForDelete(nef));
             files.AsParallel()
                 .Where(static (nef) => nef.VideoMetadata != null)
                 .Select(static (nef) => nef.VideoMetadata!)
-                .ForAll(td => fileRepository.MarkForDelete(td));
+                .ForAll(nef => fileRepository.MarkForDelete(nef));
             files.AsParallel()
                 .Where(static (nef) => nef.SubtitleMetadata != null)
                 .Select(static (nef) => nef.SubtitleMetadata!)
-                .ForAll(td => fileRepository.MarkForDelete(td));
+                .ForAll(nef => fileRepository.MarkForDelete(nef));
             files.AsParallel()
                 .Where(static (nef) => nef.Thumbnail != null)
                 .Select(static (nef) => nef.Thumbnail!)
-                .ForAll(td => fileRepository.MarkForDelete(td));
+                .ForAll(nef => fileRepository.MarkForDelete(nef));
 
             foreach (var notExistingFile in files)
             {
@@ -381,9 +389,18 @@ namespace DLNAServer.Features.FileWatcher
                 directoryInfo = new(directory.DirectoryFullPath);
 
                 directory.Directory = directoryInfo.Name;
-                directory.Depth = GetDirectoryDepth(directory.DirectoryFullPath);
+                directory.Depth = DirectoryHelper.GetDirectoryDepth(directory.DirectoryFullPath);
             }
         }
+//        private readonly Dictionary<string, DlnaMime> _serverConfigMediaFileExtensions;
+//        private DlnaMime GetConfiguredDlnaMimeFromFileExtension(string fileExtension) =>
+//            _serverConfigMediaFileExtensions.TryGetValue(fileExtension, out var mime)
+//            ? mime
+//            : _serverConfigMediaFileExtensions[fileExtension] = _serverConfig
+//                .MediaFileExtensions
+//                .FirstOrDefault(ex => fileExtension.Contains(ex.Key, StringComparison.OrdinalIgnoreCase))
+//                .Value
+//                .Key;
         private DlnaMime GetConfiguredDlnaMimeFromFileExtension(string fileExtension) =>
             _serverConfig
                 .MediaFileExtensions
@@ -391,7 +408,8 @@ namespace DLNAServer.Features.FileWatcher
                 .FirstOrDefault(ex => fileExtension.Contains(ex.Key, StringComparison.OrdinalIgnoreCase))
                 .Value
                 .Key;
-        private static void DeleteThumbnailsIfExists(ref ThumbnailEntity[] thumbnails)
+
+        private void DeleteThumbnailsIfExists(ref ThumbnailEntity[] thumbnails)
         {
             FileInfo thumbnailInfo;
             var thumbnailsPaths = thumbnails
@@ -400,21 +418,28 @@ namespace DLNAServer.Features.FileWatcher
 
             foreach (var thumbnail in thumbnailsPaths)
             {
-                thumbnailInfo = new(thumbnail);
-                var thumbnailDirectory = thumbnailInfo.Directory;
-                if (thumbnailInfo.Exists)
+                try
                 {
-                    thumbnailInfo.Delete();
-                }
-                if (thumbnailDirectory?.Exists == true)
-                {
-                    bool thumbnailDirectory_SubDirectories = thumbnailDirectory.EnumerateDirectories().Any();
-                    bool thumbnailDirectory_SubFiles = thumbnailDirectory.EnumerateFiles().Any();
-                    if (!thumbnailDirectory_SubDirectories &&
-                        !thumbnailDirectory_SubFiles)
+                    thumbnailInfo = new(thumbnail);
+                    var thumbnailDirectory = thumbnailInfo.Directory;
+                    if (thumbnailInfo.Exists)
                     {
-                        thumbnailDirectory.Delete(true);
+                        thumbnailInfo.Delete();
                     }
+                    if (thumbnailDirectory?.Exists == true)
+                    {
+                        bool thumbnailDirectory_SubDirectories = thumbnailDirectory.EnumerateDirectories().Any();
+                        bool thumbnailDirectory_SubFiles = thumbnailDirectory.EnumerateFiles().Any();
+                        if (!thumbnailDirectory_SubDirectories &&
+                            !thumbnailDirectory_SubFiles)
+                        {
+                            thumbnailDirectory.Delete(true);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogGeneralErrorMessage(ex);
                 }
             }
         }
@@ -465,38 +490,24 @@ namespace DLNAServer.Features.FileWatcher
         }
         private static void FillParentDirectories(ref DirectoryEntity[] existingDirectoryEntities, Span<FileEntity> fileEntities, IEnumerable<DirectoryEntity> directoryEntities)
         {
+            string? fileFolder;
             for (int i = 0; i < fileEntities.Length; i++)
             {
-                FileEntity? file = fileEntities[i];
-                file.Directory = directoryEntities.FirstOrDefault(d => d.DirectoryFullPath == file.Folder)
-                    ?? existingDirectoryEntities.FirstOrDefault(de => de.DirectoryFullPath == file.Folder);
+                fileFolder = fileEntities[i].Folder;
+                fileEntities[i].Directory = directoryEntities.FirstOrDefault(d => d.DirectoryFullPath == fileFolder)
+                    ?? existingDirectoryEntities.FirstOrDefault(de => de.DirectoryFullPath == fileFolder);
             }
         }
 
         private static void FillParentDirectories(ref DirectoryEntity[] existingDirectoryEntities, IEnumerable<DirectoryEntity> directoryEntities)
         {
+            string? parentDirectory;
             foreach (var directoryEntity in directoryEntities)
             {
-                var parentDirectory = new DirectoryInfo(directoryEntity.DirectoryFullPath).Parent?.FullName;
+                parentDirectory = new DirectoryInfo(directoryEntity.DirectoryFullPath).Parent?.FullName;
                 directoryEntity.ParentDirectory = directoryEntities.FirstOrDefault(de => de.DirectoryFullPath == parentDirectory)
                     ?? existingDirectoryEntities.FirstOrDefault(de => de.DirectoryFullPath == parentDirectory);
             }
-        }
-        private static int GetDirectoryDepth(string? actualFolder)
-        {
-            if (actualFolder == null)
-            {
-                return 0;
-            }
-
-            DirectoryInfo directoryInfoDepthCount = new(actualFolder);
-            int depth = 0;
-            while (directoryInfoDepthCount.Parent != null)
-            {
-                depth++;
-                directoryInfoDepthCount = directoryInfoDepthCount.Parent;
-            }
-            return depth;
         }
     }
 }

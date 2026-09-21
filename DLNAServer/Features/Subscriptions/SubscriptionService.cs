@@ -5,7 +5,7 @@ using Microsoft.Extensions.Caching.Memory;
 
 namespace DLNAServer.Features.Subscriptions
 {
-    public class SubscriptionService : ISubscriptionService
+    public sealed class SubscriptionService : ISubscriptionService
     {
         private readonly IMemoryCache MemoryCache;
         public SubscriptionService(IMemoryCache memoryCache)

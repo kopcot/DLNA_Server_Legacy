@@ -1,4 +1,5 @@
 ﻿using DLNAServer.Common;
+using DLNAServer.Configuration;
 using DLNAServer.Features.FileWatcher.Interfaces;
 using DLNAServer.Features.MediaContent.Interfaces;
 using DLNAServer.Helpers.Database;
@@ -13,6 +14,7 @@ namespace DLNAServer.SOAP.Endpoints
     {
         private readonly Lazy<IContentExplorerManager> _contentExplorerLazy;
         private readonly Lazy<IFileWatcherManager> _fileWatcherManagerLazy;
+        private readonly ServerConfig _serverConfig;
         private readonly ILogger<ContentDirectoryService> _logger;
         private readonly IHttpContextAccessor _httpContextAccessor;
 
@@ -23,11 +25,13 @@ namespace DLNAServer.SOAP.Endpoints
         public ContentDirectoryService(
             Lazy<IContentExplorerManager> contentExplorerLazy,
             Lazy<IFileWatcherManager> fileWatcherManagerLazy,
+            ServerConfig serverConfig,
             ILogger<ContentDirectoryService> logger,
             IHttpContextAccessor httpContextAccessor)
         {
             _contentExplorerLazy = contentExplorerLazy;
             _fileWatcherManagerLazy = fileWatcherManagerLazy;
+            _serverConfig = serverConfig;
             _logger = logger;
             _httpContextAccessor = httpContextAccessor;
         }
@@ -64,18 +68,18 @@ namespace DLNAServer.SOAP.Endpoints
 
                 _ = await _browseLock.WaitAsync(TimeSpanValues.TimeMin1);
 
-                requestedCount = Math.Min(requestedCount, 100);
-                requestedCount = Math.Max(requestedCount, 1);
+                requestedCount = Math.Min(requestedCount, (int)_serverConfig.ServerMaxRequestedCountAttributeFromRequest);
+                requestedCount = Math.Max(requestedCount, (int)_serverConfig.ServerMinRequestedCountAttributeFromRequest);
 
                 (var fileEntities, var directoryEntities, var isRootFolder, var totalMatches) = await ContentExplorer.GetBrowseResultItems(objectID, startingIndex, requestedCount);
 
                 response = new();
 
                 var localIpEndpoint = $"{connection!.LocalIpAddress!.MapToIPv4()}:{connection!.LocalPort!}";
+                var logger = _logger;
 
-                if (directoryEntities.Length != 0)
-                {
-                    response.Result.DidlLite.Containers = directoryEntities
+                response.Result.DidlLite.Containers = directoryEntities.Length != 0
+                    ? directoryEntities
                         .AsArray()
                         .Select(directory =>
                         {
@@ -85,17 +89,17 @@ namespace DLNAServer.SOAP.Endpoints
                             }
                             catch (Exception ex)
                             {
-                                _logger.LogGeneralErrorMessage(ex, directory.DirectoryFullPath);
+                                logger.LogGeneralErrorMessage(ex, directory.DirectoryFullPath);
                             }
                             return null;
                         })
-                        .Where(container => container != null)
-                        .Select(container => container!)
-                        .ToArray();
-                }
-                if (fileEntities.Length != 0)
-                {
-                    response.Result.DidlLite.BrowseItems = fileEntities
+                        .Where(static (container) => container != null)
+                        .Select(static (container) => container!)
+                        .ToArray()
+                    : [];
+
+                response.Result.DidlLite.BrowseItems = fileEntities.Length != 0
+                    ? fileEntities
                         .AsArray()
                         .Select(file =>
                         {
@@ -105,14 +109,14 @@ namespace DLNAServer.SOAP.Endpoints
                             }
                             catch (Exception ex)
                             {
-                                _logger.LogGeneralErrorMessage(ex, file.FilePhysicalFullPath);
+                                logger.LogGeneralErrorMessage(ex, file.FilePhysicalFullPath);
                             }
                             return null;
                         })
-                        .Where(browseItems => browseItems != null)
-                        .Select(browseItems => browseItems!)
-                        .ToArray();
-                }
+                        .Where(static (browseItems) => browseItems != null)
+                        .Select(static (browseItems) => browseItems!)
+                        .ToArray()
+                    : [];
 
                 response.TotalMatches = totalMatches;
                 response.NumberReturned = (uint)(response.Result.DidlLite.BrowseItems.Length + response.Result.DidlLite.Containers.Length);

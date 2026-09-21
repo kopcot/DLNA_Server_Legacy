@@ -35,8 +35,8 @@
             context.Request.Body.Position = 0; // Reset the stream position for the next component in the pipeline to read it
 
             // Call the next middleware in the pipeline
-            using (var originalResponseBodyStream = context.Response.Body)
-            using (var responseBodyStream = new MemoryStream())
+            await using (var originalResponseBodyStream = context.Response.Body)
+            await using (var responseBodyStream = new MemoryStream())
             {
                 // Replace the response body stream with a new one to peek into it
                 context.Response.Body = responseBodyStream;

@@ -24,7 +24,8 @@ namespace DLNAServer.Controllers
             FileMemoryCacheManager = fileMemoryCache;
         }
         [HttpGet("{fileName}")]
-        public async Task<IActionResult> GetResourceFileSCPD([FromRoute] string fileName)
+        [ResponseCache(Duration = 3600, Location = ResponseCacheLocation.Any, NoStore = false)]
+        public async Task<IActionResult> GetResourceFileSCPD([FromRoute] string fileName, CancellationToken cancellationToken)
         {
             LoggerHelper.LogDebugConnectionInformation(
                 _logger,
@@ -44,7 +45,12 @@ namespace DLNAServer.Controllers
                 return NotFound("File not found");
             }
 
-            (var isCachedSuccessful, var fileMemoryByteMemory) = await FileMemoryCacheManager.CacheFileAndReturnAsync(filePath, TimeSpanValues.TimeDays1, checkExistingInCache: true);
+            (var isCachedSuccessful, var fileMemoryByteMemory) = await FileMemoryCacheManager.CacheFileAndReturnAsync(
+                filePath, 
+                TimeSpanValues.TimeDays1, 
+                checkExistingInCache: true,
+                cancellationToken: cancellationToken);
+
             if (isCachedSuccessful)
             {
                 var fileContent = Encoding.UTF8.GetString(fileMemoryByteMemory.AsArray());

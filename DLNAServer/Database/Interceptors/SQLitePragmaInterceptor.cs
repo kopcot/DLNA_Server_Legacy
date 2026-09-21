@@ -1,18 +1,23 @@
 ﻿using DLNAServer.Common;
 using DLNAServer.Configuration;
+using DLNAServer.Helpers.Logger;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using System.Collections.Concurrent;
 using System.Data.Common;
 
 namespace DLNAServer.Database.Interceptors
 {
-    public class SQLitePragmaInterceptor : DbConnectionInterceptor
+    public sealed class SQLitePragmaInterceptor : DbConnectionInterceptor
     {
         private readonly ServerConfig _serverConfig;
+        private readonly ILogger<SQLitePragmaInterceptor> _logger;
         public SQLitePragmaInterceptor(
-            ServerConfig serverConfig)
+            ServerConfig serverConfig,
+            ILogger<SQLitePragmaInterceptor> logger)
         {
             _serverConfig = serverConfig;
+            _logger = logger;
         }
         private static readonly ConcurrentDictionary<Guid, byte> _lastUsedConnectionId_ConnectionOpened = [];
         #region Opened
@@ -22,18 +27,19 @@ namespace DLNAServer.Database.Interceptors
             {
                 if (_lastUsedConnectionId_ConnectionOpened.TryAdd(eventData.ConnectionId, 0))
                 {
-                    using (var transaction = connection.BeginTransaction())
+                    //No transaction, as some PRAGMAs must be executed outside of a transaction
                     using (var command = connection.CreateCommand())
                     {
                         OpenedCommands(ref connection, command);
 
                         _ = command.ExecuteNonQuery();
-
-                        transaction.Commit();
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                _logger.LogGeneralErrorMessage(ex);
+            }
 
             base.ConnectionOpened(connection, eventData);
         }
@@ -44,25 +50,26 @@ namespace DLNAServer.Database.Interceptors
             {
                 if (_lastUsedConnectionId_ConnectionOpened.TryAdd(eventData.ConnectionId, 0))
                 {
-                    using (var transaction = await connection.BeginTransactionAsync(cancellationToken))
+                    //No transaction, as some PRAGMAs must be executed outside of a transaction
                     await using (var command = connection.CreateCommand())
                     {
                         OpenedCommands(ref connection, command);
 
                         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
-                        await transaction.CommitAsync(cancellationToken);
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                _logger.LogGeneralErrorMessage(ex);
+            }
 
             await base.ConnectionOpenedAsync(connection, eventData, cancellationToken);
         }
 
         private void OpenedCommands(ref readonly DbConnection connection, DbCommand command)
         {
-            command.CommandText = string.Empty;
+            command.CommandText ??= string.Empty;
 
             // reduces fsync() calls on disk writes, making transactions faster
             // trade durability for speed
@@ -78,9 +85,16 @@ namespace DLNAServer.Database.Interceptors
             //   while the rest will still be accessed using traditional disk I/O.
             if (_serverConfig.ServerDatabaseMemoryMapLimitInMBytes > 0)
             {
-                long databaseSize = new FileInfo(connection.Database).Length;
-                long mmapSize = Math.Min(databaseSize, (long)_serverConfig.ServerDatabaseMemoryMapLimitInMBytes * (1024 * 1024));
-                command.CommandText += $"PRAGMA mmap_size={mmapSize}; ";
+                var builder = new SqliteConnectionStringBuilder(connection.ConnectionString);
+                var databasePath = builder.DataSource; // absolute or relative path to the .db file
+
+                if (!string.IsNullOrWhiteSpace(databasePath)
+                    && File.Exists(databasePath))
+                {
+                    long databaseSize = new FileInfo(databasePath).Length;
+                    long mmapSize = Math.Min(databaseSize, (long)_serverConfig.ServerDatabaseMemoryMapLimitInMBytes * (1024 * 1024));
+                    command.CommandText += $"PRAGMA mmap_size={mmapSize}; ";
+                }
             }
 
             // database memory cache size 
@@ -89,16 +103,19 @@ namespace DLNAServer.Database.Interceptors
                 // negative value set the cache size in KB instead of page count
                 command.CommandText += $"PRAGMA cache_size=-{_serverConfig.ServerDatabaseCacheLimitInMBytes * 1024}; ";
             }
-            else
+            //else
             {
                 // cache ~16MB in memory (4096 pages * 4kB per page) → check with DlnaDbContext.OptimizeDatabase for page_size
                 command.CommandText += "PRAGMA cache_size=4096; ";
             }
 
-            // set temporary tables and indices in RAM instead of disk 
-            command.CommandText += "PRAGMA temp_store=MEMORY; ";
-            //command.CommandText += "PRAGMA temp_store=2; ";
-
+            if (_serverConfig.ServerDatabaseUseTempStoreAsMemory)
+            {
+                // set temporary tables and indices in RAM instead of disk 
+                command.CommandText += "PRAGMA temp_store=MEMORY; ";
+                //command.CommandText += "PRAGMA temp_store=2; ";
+            }
+            
             // Optimize Query Execution (indexes and query plans)
             command.CommandText += "PRAGMA analysis_limit=800; ";
 
@@ -126,7 +143,10 @@ namespace DLNAServer.Database.Interceptors
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                _logger.LogGeneralErrorMessage(ex);
+            }
 
             return base.ConnectionClosing(connection, eventData, result);
         }
@@ -139,7 +159,7 @@ namespace DLNAServer.Database.Interceptors
                 if (ShouldFreeDBSpace())
                 {
                     using (CancellationTokenSource cts = new(TimeSpanValues.TimeMin30))
-                    using (var transaction = await connection.BeginTransactionAsync(cts.Token))
+                    await using (var transaction = await connection.BeginTransactionAsync(cts.Token))
                     await using (var command = connection.CreateCommand())
                     {
                         ClosingCommands(command);
@@ -150,13 +170,16 @@ namespace DLNAServer.Database.Interceptors
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                _logger.LogGeneralErrorMessage(ex);
+            }
 
             return await base.ConnectionClosingAsync(connection, eventData, result);
         }
         private static void ClosingCommands(DbCommand command)
         {
-            command.CommandText = string.Empty;
+            command.CommandText ??= string.Empty;
 
             // QUERY OPTIMIZATIONS
             // runs internal optimizations like re-indexing and clearing unused pages
@@ -172,7 +195,7 @@ namespace DLNAServer.Database.Interceptors
             command.CommandText += "PRAGMA shrink_memory; ";
         }
         private static int _connectionCounter = 0;
-        private const int _freeAfterConnection = short.MaxValue;
+        private const int _freeAfterConnection = byte.MaxValue; //short.MaxValue;
         private static bool ShouldFreeDBSpace()
         {
             return Interlocked.Increment(ref _connectionCounter) >= _freeAfterConnection

@@ -8,6 +8,7 @@ using DLNAServer.Features.MediaContent.Interfaces;
 using DLNAServer.Features.MediaProcessors.Interfaces;
 using DLNAServer.Features.Subscriptions.Data;
 using DLNAServer.Helpers.Database;
+using DLNAServer.Helpers.Database.Conversions;
 using DLNAServer.Helpers.Diagnostics;
 using DLNAServer.Helpers.Logger;
 using DLNAServer.Types.DLNA;
@@ -73,7 +74,7 @@ namespace DLNAServer.Controllers.Manage
             _logger = logger;
         }
         [HttpGet("configuration")]
-        public ActionResult<ServerConfig> GetServerConfigAsync()
+        public ActionResult<ServerConfig> GetServerConfig()
         {
             return Ok(_serverConfig);
         }
@@ -162,8 +163,8 @@ namespace DLNAServer.Controllers.Manage
                         DlnaMime = $"{m}",
                         ContentType = m.ToMimeString(),
                         MimeDescription = m.ToMimeDescription(),
-                        DlnaMedia = $"{m.ToDlnaMedia()}",
-                        DefaultDlnaItemClass = $"{m.ToDefaultDlnaItemClass()}",
+                        DlnaMedia = m.ToDlnaMedia(),
+                        DefaultDlnaItemClass = m.ToDefaultDlnaItemClass(),
                         MainProfileName = m.ToMainProfileNameString() ?? string.Empty,
                         ProfileNames = m.ToProfileNameString(),
                         Extensions = m.DefaultFileExtensions(),
@@ -179,8 +180,8 @@ namespace DLNAServer.Controllers.Manage
                         DlnaMime = $"{m}",
                         ContentType = string.Empty,
                         MimeDescription = string.Empty,
-                        DlnaMedia = string.Empty,
-                        DefaultDlnaItemClass = string.Empty,
+                        DlnaMedia = DlnaMedia.Unknown,
+                        DefaultDlnaItemClass = DlnaItemClass.Unknown,
                         MainProfileName = string.Empty,
                         ProfileNames = Array.Empty<string>(),
                         Extensions = Array.Empty<string>(),
@@ -194,7 +195,7 @@ namespace DLNAServer.Controllers.Manage
             return Ok(result);
         }
         [HttpGet("subscriptions")]
-        public ActionResult<IEnumerable<Subscription>> GetAllSubscriptionAsync()
+        public ActionResult<IEnumerable<Subscription>> GetAllSubscription()
         {
             return Ok();
         }
@@ -204,10 +205,10 @@ namespace DLNAServer.Controllers.Manage
             Dictionary<string, string?> memoryCacheInfo = [];
             if (MemoryCache is MemoryCache memoryCache)
             {
-                memoryCacheInfo.Add("Count", $"{memoryCache.Count}");
+                memoryCacheInfo.Add("Count", memoryCache.Count.ToString());
                 if (MemoryCache.GetCurrentStatistics() is MemoryCacheStatistics memoryCacheStatistics)
                 {
-                    memoryCacheInfo.Add("Current_estimated_size", $"{memoryCacheStatistics.CurrentEstimatedSize}");
+                    memoryCacheInfo.Add("Current_estimated_size", $"{memoryCacheStatistics.CurrentEstimatedSize?.ToString()}");
                 }
                 var keys = memoryCache
                     .Keys
@@ -220,6 +221,14 @@ namespace DLNAServer.Controllers.Manage
                     memoryCacheInfo.Add(key.Key, key.Value);
                 }
             }
+
+            memoryCacheInfo.Add("StringCacheConverter Count", StringCacheConverter.CacheCount?.ToString());
+            memoryCacheInfo.Add("StringCacheConverter LastAddCache", StringCacheConverter.LastAddCache?.ToString());
+            memoryCacheInfo.Add("StringCacheConverter CurrentEstimatedSize", StringCacheConverter.CurrentEstimatedSize?.ToString());
+            memoryCacheInfo.Add("StringCacheConverter CurrentEntryCount", StringCacheConverter.CurrentEntryCount?.ToString());
+            memoryCacheInfo.Add("StringCacheConverter TotalHits", StringCacheConverter.TotalHits?.ToString());
+            memoryCacheInfo.Add("StringCacheConverter TotalMisses", StringCacheConverter.TotalMisses?.ToString());
+
             return Ok(memoryCacheInfo);
         }
         [HttpGet("memoryCacheClear")]
@@ -282,6 +291,21 @@ namespace DLNAServer.Controllers.Manage
                 return Ok("restarting");
             }
         }
+        [HttpGet("block/{hours}")]
+        public async Task<IActionResult> GetRestartApplication([FromRoute] int hours)
+        {
+            InformationBlockedRequestStart(hours);
+
+            ApiBlockerService.BlockApi(true, $"Blocked all request for {hours} hours. Start time {DateTime.Now}");
+    
+            await Task.Delay(TimeSpan.FromHours(hours));
+    
+            ApiBlockerService.BlockApi(false);
+
+            InformationBlockedRequestEnd();
+
+            return Ok($"Unblock after {hours} hours.");
+        }
         [HttpGet("clearAllMetadata")]
         public async Task<IActionResult> GetClearAllMetadataAsync()
         {
@@ -306,7 +330,7 @@ namespace DLNAServer.Controllers.Manage
             }
 
             IsGetRecreateAllFilesInfoAsyncActive = true;
-            ApiBlockerService.BlockApi(true, $"Recreate all file info");
+            ApiBlockerService.BlockApi(true, "Recreate all file info");
 
             try
             {
@@ -320,9 +344,9 @@ namespace DLNAServer.Controllers.Manage
                     long fileCountAll = await FileRepository.GetCountAsync();
 
                     MemoryInfo.LogMemoryInfo(_logger);
-                    await ContentExplorerManager.CheckAllFilesExistingAsync();
+                    await ContentExplorerManager.CheckAllFilesExistingAsync(maxChunkSize);
                     MemoryInfo.LogMemoryInfo(_logger);
-                    await ContentExplorerManager.CheckAllDirectoriesExistingAsync();
+                    await ContentExplorerManager.CheckAllDirectoriesExistingAsync(maxChunkSize);
                     MemoryInfo.LogMemoryInfo(_logger);
 
                     InformationDoneCheckingFilesAndDirectories();
@@ -408,8 +432,8 @@ namespace DLNAServer.Controllers.Manage
                 return BadRequest("File not found");
             }
 
-            await ContentExplorerManager.ClearMetadataAsync([file]);
-            await ContentExplorerManager.ClearThumbnailsAsync([file]);
+            await ContentExplorerManager.ClearMetadataAsync(new([file]));
+            await ContentExplorerManager.ClearThumbnailsAsync(new([file]));
 
             await MediaProcessingService.FillEmptyInfoAsync([file], setCheckedForFailed: false);
 

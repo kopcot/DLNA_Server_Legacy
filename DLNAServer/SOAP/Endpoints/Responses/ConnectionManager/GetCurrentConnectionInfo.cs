@@ -6,7 +6,7 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ConnectionManager
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider adding the 'required' modifier or declaring as nullable.
     [MessageContract(WrapperName = "GetCurrentConnectionInfoResponse")]
     [XmlRoot(ElementName = "GetCurrentConnectionInfoResponse")]
-    public class GetCurrentConnectionInfo
+    public sealed class GetCurrentConnectionInfo
     {
         [XmlElement(ElementName = "RcsID")]
         public uint RcsID { get; set; }

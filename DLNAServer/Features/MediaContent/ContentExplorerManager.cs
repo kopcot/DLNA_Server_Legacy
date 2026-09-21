@@ -1,4 +1,5 @@
 ﻿using CommunityToolkit.HighPerformance;
+using CommunityToolkit.HighPerformance.Buffers;
 using DLNAServer.Common;
 using DLNAServer.Configuration;
 using DLNAServer.Database.Entities;
@@ -6,6 +7,7 @@ using DLNAServer.Database.Repositories.Interfaces;
 using DLNAServer.Features.MediaContent.Interfaces;
 using DLNAServer.Features.MediaProcessors.Interfaces;
 using DLNAServer.Helpers.Database;
+using DLNAServer.Helpers.Files;
 using DLNAServer.Helpers.Logger;
 using DLNAServer.Types.DLNA;
 using Microsoft.EntityFrameworkCore;
@@ -13,6 +15,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO.Enumeration;
+using System.Runtime.InteropServices;
 
 namespace DLNAServer.Features.MediaContent
 {
@@ -38,7 +41,6 @@ namespace DLNAServer.Features.MediaContent
         private IVideoMetadataRepository VideoMetadataRepository => _videoMetadataRepositoryLazy.Value;
         private ISubtitleMetadataRepository SubtitleMetadataRepository => _subtitleMetadataRepositoryLazy.Value;
         private IThumbnailRepository ThumbnailRepository => _thumbnailRepositoryLazy.Value;
-        private readonly ArrayPool<FileEntity> poolFileEntity = ArrayPool<FileEntity>.Shared;
         private readonly ArrayPool<DirectoryEntity> poolDirectoryEntity = ArrayPool<DirectoryEntity>.Shared;
         public ContentExplorerManager(
             ILogger<ContentExplorerManager> logger,
@@ -84,72 +86,69 @@ namespace DLNAServer.Features.MediaContent
         {
             return Task.CompletedTask;
         }
-        private Dictionary<DlnaMime, IEnumerable<string>> GetAllFilesInFolders(List<string> sourceFolders, bool withSubdirectories)
+        private Dictionary<DlnaMime, ReadOnlyMemory<string>> GetAllFilesInFolders(List<string> sourceFolders, bool withSubdirectories)
         {
-            List<string> filesInSourceFolders = [];
+            Dictionary<DlnaMime, HashSet<string>> filesInSourceFolders = [];
 
-            var excludeFolders = new HashSet<string>(_serverConfig.ExcludeFolders, StringComparer.OrdinalIgnoreCase);
+            HashSet<string> excludeFolders = new(_serverConfig.ExcludeFolders, StringComparer.OrdinalIgnoreCase);
             var mediaFileExtensions = _serverConfig.MediaFileExtensions
                 .ToDictionary(
                     keySelector: static (kvp) => kvp.Key,
                     elementSelector: static (kvp) => kvp.Value.Key,
                     comparer: StringComparer.OrdinalIgnoreCase);
 
+            DirectoryInfo directory;
+            var enumOptions = enumerationOptionsDefault;
+            FileSystemEnumerable<(string pathFullName, DlnaMime mime)> enumerateFiles;
+
             foreach (var sourceFolder in sourceFolders)
             {
-                var directory = new DirectoryInfo(sourceFolder);
+                directory = new(sourceFolder);
                 if (!directory.Exists)
                 {
                     WarningDirectoryNotExists(sourceFolder);
                     continue;
                 }
-                // unable to use search patters from ServerConfig.Extensions,
-                // as for Linux it is different between .jpg, .JPG, .Jpg
-                // 'MatchCasing = MatchCasing.CaseInsensitive' is not helpful  
 
-                var enumOptions = enumerationOptionsDefault;
                 enumOptions.ReturnSpecialDirectories = withSubdirectories;
 
-                var localList = new FileSystemEnumerable<string>
+                enumerateFiles = new
                     (
                         directory: directory.FullName,
-                        transform: static (ref FileSystemEntry entry) => entry.ToFullPath(),
+                        transform: (ref FileSystemEntry entry) =>
+                        {
+                            string fileFullPath = entry.ToFullPath();
+                            var extension = Path.GetExtension(fileFullPath);
+                            mediaFileExtensions.TryGetValue(extension, out var mime);
+
+                            return (fileFullPath, mime);
+                        },
                         options: enumOptions
                     )
                 {
                     ShouldIncludePredicate = (ref FileSystemEntry entry) =>
                     {
-                        var ext = Path.GetExtension(entry.FileName.ToString());
-                        return mediaFileExtensions.ContainsKey(ext);
+                        string fileFullPath = entry.ToFullPath();
+                        var extension = Path.GetExtension(fileFullPath);
+                        return mediaFileExtensions.TryGetValue(extension, out DlnaMime mime)
+                            && mime != DlnaMime.Undefined
+                            && !excludeFolders.Any(skip => fileFullPath.Contains(skip));
                     }
-                }
-                    .AsParallel()
-                    .Select(static (entry) => entry)
-                    .ToList();
+                };
 
-                filesInSourceFolders.AddRange(localList);
+                foreach (var (fileFullPath, mime) in enumerateFiles)
+                {
+                    ref var list = ref CollectionsMarshal.GetValueRefOrAddDefault(filesInSourceFolders, mime, out _);
+
+                    list ??= [];
+                    list.Add(fileFullPath);
+                }
             }
 
-            var maxDegreeOfParallelism = Math.Max(Math.Min(filesInSourceFolders.Count, (int)_serverConfig.ServerMaxDegreeOfParallelism), 1);
-
-            Dictionary<DlnaMime, IEnumerable<string>> foundFiles = Partitioner.Create(filesInSourceFolders)
-                .AsParallel()
-                .WithDegreeOfParallelism(maxDegreeOfParallelism)
-                .WithMergeOptions(ParallelMergeOptions.AutoBuffered)
-                .WithExecutionMode(ParallelExecutionMode.ForceParallelism)
-                .Where(f => !excludeFolders.Any(skip => f.Contains(skip, StringComparison.OrdinalIgnoreCase)))
-                .Select(f =>
-                {
-                    var mime = mediaFileExtensions.FirstOrDefault(e => f.EndsWith(e.Key, StringComparison.OrdinalIgnoreCase)).Value;
-                    return (File: f, Mime: mime);
-                })
-                .Where(static (g) => g.Mime != DlnaMime.Undefined)
-                .GroupBy(static (x) => x.Mime)
+            return filesInSourceFolders
                 .ToDictionary(
                     keySelector: static (g) => g.Key,
-                    elementSelector: static (g) => g.Select(x => x.File).Order().AsEnumerable());
-
-            return foundFiles;
+                    elementSelector: static (g) => new ReadOnlyMemory<string>(g.Value.ToArray()));
         }
 
         private static readonly EnumerationOptions enumerationOptionsDefault = new()
@@ -164,6 +163,9 @@ namespace DLNAServer.Features.MediaContent
                              ,
             //BufferSize = 1_024_000,
             IgnoreInaccessible = false,
+            // unable to use search patters from ServerConfig.Extensions,
+            // as for Linux it is different between .jpg, .JPG, .Jpg
+            // 'MatchCasing = MatchCasing.CaseInsensitive' is not helpful 
             MatchCasing = MatchCasing.CaseInsensitive,
             MatchType = MatchType.Simple,
             MaxRecursionDepth = int.MaxValue,
@@ -171,85 +173,107 @@ namespace DLNAServer.Features.MediaContent
         };
 
         private static readonly SemaphoreSlim semaphoreRefreshFoundFiles = new(1, 1);
+        /// <summary>
+        /// Scans the provided grouped file list by DLNA MIME type, detects new files not present in the database,
+        /// creates corresponding <see cref="FileEntity"/> and <see cref="DirectoryEntity"/> entries,<br/>
+        /// and updates both the database and cached file/directory lists.
+        /// Ensures thread safety via semaphores and optimizes file checks with controlled parallelism.
+        /// </summary>
         /// <param name="inputFiles">Files to check and add to database</param>
         /// <param name="shouldBeAdded"><see langword="true"/> if <paramref name="inputFiles"/> should not exists in the database</param>
-        /// <returns></returns>
-        public async Task RefreshFoundFilesAsync(Dictionary<DlnaMime, IEnumerable<string>> inputFiles, bool shouldBeAdded)
+        /// <returns></returns>c
+        public async Task RefreshFoundFilesAsync(Dictionary<DlnaMime, ReadOnlyMemory<string>> inputFiles, bool shouldBeAdded)
         {
             try
             {
                 _ = await semaphoreRefreshFoundFiles.WaitAsync(TimeSpanValues.TimeMin5);
 
                 List<FileEntity> fileEntities = [];
-                SemaphoreSlim semaphoreGetFilesFromDB = new(1, 1);
 
-                await Parallel.ForEachAsync(
-                    source: inputFiles,
-                    body: async (mimeGroup, _) =>
-                    {
-                        var fileExtensionConfiguration = _serverConfig.MediaFileExtensions.FirstOrDefault(e => e.Value.Key == mimeGroup.Key);
-                        var fileExtension = string.Intern(fileExtensionConfiguration.Key.ToUpperInvariant());
-                        var fileDlnaProfileName = fileExtensionConfiguration.Value.Value != null
-                            ? string.Intern(fileExtensionConfiguration.Value.Value)
-                            : mimeGroup.Key.ToMainProfileNameString();
-                        var upnpClass = mimeGroup.Key.ToDefaultDlnaItemClass();
-
-                        await semaphoreGetFilesFromDB.WaitAsync(TimeSpanValues.TimeMin5, _);
-
-                        var existingFiles = (await FileRepository.GetAllFileFullNamesAsync(
-                            filterExtension: fileExtension,
-                            useCachedResult: !shouldBeAdded))
-                            .AsArray();
-                        var existingFilesHash = new HashSet<string>(existingFiles, StringComparer.OrdinalIgnoreCase);
-
-                        semaphoreGetFilesFromDB.Release();
-
-                        var maxDegreeOfParallelism = Math.Max(Math.Min(mimeGroup.Value.Count(), (int)_serverConfig.ServerMaxDegreeOfParallelism), 1);
-
-                        var addedFiles = Partitioner.Create(mimeGroup.Value)
-                            .AsParallel()
-                            .WithDegreeOfParallelism(maxDegreeOfParallelism)
-                            .WithMergeOptions(ParallelMergeOptions.AutoBuffered)
-                            .WithExecutionMode(ParallelExecutionMode.ForceParallelism)
-                            .Select<string, FileInfo>(static (file) => new(file))
-                            .Where<FileInfo>(fileInfo => !existingFilesHash.Contains(fileInfo.FullName)
-                                && fileInfo.Exists)
-                            .Select<FileInfo, FileEntity>(fileInfo =>
-                            {
-                                return new()
-                                {
-                                    CreatedInDB = _serverConfig.UseFileCreationDateTimeAsCreatedInDatabase ? fileInfo.CreationTime : DateTime.Now,
-                                    FileCreateDate = fileInfo.CreationTime,
-                                    FileModifiedDate = fileInfo.LastWriteTime,
-                                    FileName = fileInfo.Name,
-                                    FileExtension = fileExtension,
-                                    Folder = fileInfo.DirectoryName != null ? string.Intern(fileInfo.DirectoryName) : null,
-                                    FilePhysicalFullPath = fileInfo.FullName,
-                                    Title = fileInfo.Name,
-                                    FileSizeInBytes = fileInfo.Length,
-                                    FileDlnaMime = mimeGroup.Key,
-                                    FileDlnaProfileName = fileDlnaProfileName,
-                                    UpnpClass = upnpClass,
-                                };
-                            })
-                            .ToList();
-
-                        lock (fileEntities)
+                using (SemaphoreSlim semaphoreGetFilesFromDB = new(1, 1))
+                using (SemaphoreSlim semaphoreAddRange = new(1, 1))
+                {
+                    await Parallel.ForEachAsync(
+                        source: inputFiles,
+                        parallelOptions: new ParallelOptions
                         {
+                            MaxDegreeOfParallelism = (int)_serverConfig.ServerMaxDegreeOfParallelism,
+                            CancellationToken = default
+                        },
+                        body: async (mimeGroup, cancellationToken) =>
+                        {
+                            var fileExtensionConfiguration = _serverConfig.MediaFileExtensions.FirstOrDefault(e => e.Value.Key == mimeGroup.Key);
+                            var fileExtension = string.Intern(fileExtensionConfiguration.Key.ToUpperInvariant());
+                            var fileDlnaProfileName = fileExtensionConfiguration.Value.Value != null
+                                ? string.Intern(fileExtensionConfiguration.Value.Value)
+                                : mimeGroup.Key.ToMainProfileNameString();
+                            var upnpClass = mimeGroup.Key.ToDefaultDlnaItemClass();
+
+                            _ = await semaphoreGetFilesFromDB.WaitAsync(TimeSpanValues.TimeMin5, cancellationToken);
+
+                            var existingFiles = (await FileRepository.GetAllFileFullNamesAsync(
+                                filterExtension: fileExtension,
+                                useCachedResult: !shouldBeAdded))
+                                .AsArray();
+                            var existingFilesHash = new HashSet<string>(existingFiles, StringComparer.OrdinalIgnoreCase);
+
+                            semaphoreGetFilesFromDB.Release();
+
+                            var filePaths = mimeGroup.Value.AsArray();
+
+                            var fileInfos = new HashSet<FileInfo>(filePaths.Length); // Pre-size to avoid rehash growth
+                            for (int i = 0; i < filePaths.Length; i++)
+                            {
+                                if (!existingFilesHash.Contains(filePaths[i]))
+                                {
+                                    fileInfos.Add(new(filePaths[i]));
+                                }
+                            }
+
+                            var maxDegreeOfParallelism = Math.Max(Math.Min(mimeGroup.Value.Length, (int)_serverConfig.ServerMaxDegreeOfParallelism), 1);
+
+                            var addedFiles = Partitioner.Create(fileInfos)
+                                .AsParallel()
+                                .WithCancellation(cancellationToken)
+                                .WithDegreeOfParallelism(maxDegreeOfParallelism)
+                                .WithMergeOptions(ParallelMergeOptions.AutoBuffered)
+                                .WithExecutionMode(ParallelExecutionMode.ForceParallelism)
+                                .Where<FileInfo>(static (fileInfo) => fileInfo.Exists)
+                                .Select<FileInfo, FileEntity>(fileInfo =>
+                                {
+                                    return new()
+                                    {
+                                        CreatedInDB = _serverConfig.UseFileCreationDateTimeAsCreatedInDatabase ? fileInfo.CreationTime : DateTime.Now,
+                                        FileCreateDate = fileInfo.CreationTime,
+                                        FileModifiedDate = fileInfo.LastWriteTime,
+                                        FileName = fileInfo.Name,
+                                        FileExtension = fileExtension,
+                                        Folder = fileInfo.DirectoryName,
+                                        FilePhysicalFullPath = fileInfo.FullName,
+                                        Title = fileInfo.Name,
+                                        FileSizeInBytes = fileInfo.Length,
+                                        FileDlnaMime = mimeGroup.Key,
+                                        FileDlnaProfileName = fileDlnaProfileName,
+                                        UpnpClass = upnpClass,
+                                    };
+                                })
+                                .ToList();
+
+                            await semaphoreAddRange.WaitAsync(TimeSpanValues.TimeMin5, cancellationToken);
                             fileEntities.AddRange(addedFiles);
-                        }
-                    });
+                            semaphoreAddRange.Release();
+                        });
+                }
 
                 if (fileEntities.Count == 0)
                 {
                     return;
                 }
 
-                var folders = fileEntities
-                    .Select(static (f) => f.Folder)
-                    .DistinctBy(static (f) => f)
-                    .Where(static (f) => !string.IsNullOrWhiteSpace(f))
-                    .ToArray();
+                var folders = new HashSet<string>(fileEntities
+                    .Where(static (f) => !string.IsNullOrWhiteSpace(f.Folder))
+                    .Select(static (f) => f.Folder!),
+                    StringComparer.OrdinalIgnoreCase);
 
                 List<DirectoryEntity> directoryEntities = await GetNewDirectoryEntities(folders);
                 // Fill parent directory after creation of all directories
@@ -257,16 +281,41 @@ namespace DLNAServer.Features.MediaContent
 
                 if (directoryEntities.Count != 0 || fileEntities.Count != 0)
                 {
-                    InformationTotalAdding(directoryEntities.Count, fileEntities.Count);
 
                     const int maxShownCount = 10;
+
+                    var existingDirectories = await DirectoryRepository
+                        .GetAllExistingByPathFullNamesAsync(directoryEntities.Select(static (de) => de.DirectoryFullPath), false);
+                    if (existingDirectories.Length > 0)
+                    {
+                        WarningExistingDirectoriesInDatabase(string.Join(Environment.NewLine, existingDirectories.AsArray()));
+                        directoryEntities = directoryEntities
+                            .Where(de => !existingDirectories.Span.Contains(de.DirectoryFullPath))
+                            .ToList();
+                    }
+
+                    var existingFiles = await FileRepository
+                        .GetAllExistingByPathFullNamesAsync(fileEntities.Select(static (de) => de.FilePhysicalFullPath), false);
+                    if (existingFiles.Length > 0)
+                    {
+                        WarningExistingFilesInDatabase(string.Join(Environment.NewLine, existingFiles.AsArray()));
+                        fileEntities = fileEntities
+                            .Where(fe => !existingFiles.Span.Contains(fe.FilePhysicalFullPath))
+                            .ToList();
+                    }
+                     
+                    InformationTotalAdding(directoryEntities.Count, fileEntities.Count);
+
                     if (directoryEntities.Count != 0)
                     {
+
                         InformationDirectoriesCount(
-                            string.Join(Environment.NewLine, directoryEntities.Select(static (fe) => fe.DirectoryFullPath).Take(maxShownCount)),
+                            string.Join(Environment.NewLine, directoryEntities.Select(static (de) => de.DirectoryFullPath).Take(maxShownCount)),
                             directoryEntities.Count > maxShownCount ? $"{Environment.NewLine}..." : string.Empty);
 
                         _ = await DirectoryRepository.AddRangeAsync(directoryEntities);
+
+                        InformationDirectoriesAddingFinished(directoryEntities.Count);
 
                         // to refresh cached value
                         // cached at first lines of FillParentDirectoriesAsync method
@@ -280,13 +329,11 @@ namespace DLNAServer.Features.MediaContent
 
                         _ = await FileRepository.AddRangeAsync(fileEntities);
 
+                        InformationFilesAddingFinished(fileEntities.Count);
+
                         // to refresh cached value
                         // cached at first lines of this method
-                        var extensions = fileEntities
-                            .AsParallel()
-                            .GroupBy(f => f.FileExtension)
-                            .Select(f => f.Key)
-                            .ToList();
+                        var extensions = new HashSet<string>(fileEntities.Select(static (fe) => fe.FileExtension), StringComparer.OrdinalIgnoreCase);
                         foreach (var extension in extensions)
                         {
                             _ = await FileRepository.GetAllFileFullNamesAsync(
@@ -337,20 +384,23 @@ namespace DLNAServer.Features.MediaContent
             List<DirectoryEntity> newDirectoryEntities = [];
             HashSet<string> alreadyAdded = new(StringComparer.OrdinalIgnoreCase);
 
+            DirectoryInfo? directoryInfo;
+            DirectoryEntity directoryEntity;
+
             foreach (var folder in folders)
             {
-                DirectoryInfo? directoryInfo = new(folder!);
+                directoryInfo = new(folder!);
                 while (directoryInfo?.Exists == true)
                 {
                     if (!existingDirectoriesHash.Contains(directoryInfo.FullName)
                         && alreadyAdded.Add(directoryInfo.FullName))
                     {
-                        DirectoryEntity directoryEntity = new()
+                        directoryEntity = new()
                         {
                             Directory = directoryInfo.Name,
                             DirectoryFullPath = directoryInfo.FullName,
                             ParentDirectory = null,
-                            Depth = GetDirectoryDepth(directoryInfo.FullName),
+                            Depth = DirectoryHelper.GetDirectoryDepth(directoryInfo.FullName),
                         };
                         newDirectoryEntities.Add(directoryEntity);
                     }
@@ -361,43 +411,32 @@ namespace DLNAServer.Features.MediaContent
 
             return newDirectoryEntities;
         }
-
-        private static int GetDirectoryDepth(string? actualFolder)
+        private async Task<(ReadOnlyMemory<FileEntity> files, ReadOnlyMemory<DirectoryEntity> directories)> GetFilesAndDirectoriesAsync(
+            DirectoryEntity? directory,
+            bool useCachedResult)
         {
-            if (actualFolder == null)
-            {
-                return 0;
-            }
-
-            DirectoryInfo directoryInfoDepthCount = new(actualFolder);
-            int depth = 0;
-            while (directoryInfoDepthCount.Parent != null)
-            {
-                depth++;
-                directoryInfoDepthCount = directoryInfoDepthCount.Parent;
-            }
-            return depth;
-        }
-
-        private async Task<(ReadOnlyMemory<FileEntity> files, ReadOnlyMemory<DirectoryEntity> directories)> GetFilesAndDirectoriesAsync(DirectoryEntity? directory)
-        {
-            ReadOnlyMemory<DirectoryEntity> directoryContainers;
             ReadOnlyMemory<FileEntity> filesItems;
+            ReadOnlyMemory<DirectoryEntity> directoryContainers;
 
-            if (directory is DirectoryEntity)
+            if (directory != null)
             {
-                // not possible to take cached result because some files can be removed during server offline time
-                // and in next parts, there is check for existing file
-                filesItems = await FileRepository
-                    .GetAllByParentDirectoryIdsAsync([directory.Id], _serverConfig.ExcludeFolders, useCachedResult: false);
-                directoryContainers = await DirectoryRepository
-                    .GetAllByParentDirectoryIdsAsync([directory.Id], _serverConfig.ExcludeFolders, useCachedResult: false);
+                Guid[] parentIds = [directory.Id];
+
+                var filesItemsTask = FileRepository
+                    .GetAllByParentDirectoryIdsAsync(parentIds, _serverConfig.ExcludeFolders, useCachedResult);
+                var directoryContainersTask = DirectoryRepository
+                    .GetAllByParentDirectoryIdsAsync(parentIds, _serverConfig.ExcludeFolders, useCachedResult);
+
+                await Task.WhenAll([filesItemsTask, directoryContainersTask]);
+
+                filesItems = await filesItemsTask;
+                directoryContainers = await directoryContainersTask;
             }
             else
             {
                 filesItems = ReadOnlyMemory<FileEntity>.Empty;
                 directoryContainers = await DirectoryRepository
-                    .GetAllByPathFullNamesAsync(_serverConfig.SourceFolders, useCachedResult: true);
+                    .GetAllByPathFullNamesAsync(_serverConfig.SourceFolders, useCachedResult);
             }
 
             return (files: filesItems, directories: directoryContainers);
@@ -408,10 +447,9 @@ namespace DLNAServer.Features.MediaContent
                 .GetAllByAddedToDbAsync((int)numberOfFiles, _serverConfig.ExcludeFolders, useCachedResult: false)
                 .ContinueWith(static (fe) => (fe.Result, ReadOnlyMemory<DirectoryEntity>.Empty));
         }
-        public async Task CheckAllFilesExistingAsync()
+        public async Task CheckAllFilesExistingAsync(int batchSize = 500)
         {
             FileRepository.DabataseClearChangeTracker();
-            const int batchSize = 1000;
             int offset = 0;
             ReadOnlyMemory<FileEntity> fileEntities;
             while (true)
@@ -427,82 +465,103 @@ namespace DLNAServer.Features.MediaContent
             }
             FileRepository.DabataseClearChangeTracker();
         }
-        public ValueTask<ReadOnlyMemory<FileEntity>> CheckFilesExistingAsync(ReadOnlyMemory<FileEntity> fileEntities)
+        public async Task<ReadOnlyMemory<FileEntity>> CheckFilesExistingAsync(ReadOnlyMemory<FileEntity> fileEntities)
         {
             if (fileEntities.IsEmpty)
             {
-                return new(fileEntities);
+                return fileEntities;
             }
 
-            var length = fileEntities.Length;
+            var fileEntitiesLength = fileEntities.Length;
 
-            FileEntity[] existingFiles = poolFileEntity.Rent(length);
-            int existingFilesIndex = 0;
-
-            FileEntity[] notExistingFiles = poolFileEntity.Rent(length);
-            int notExistingFilesIndex = 0;
+            using ArrayPoolBufferWriter<FileEntity> existingFilesWriter = new(fileEntitiesLength);
+            using ArrayPoolBufferWriter<FileEntity> notExistingFilesWriter = new(fileEntitiesLength);
+            //ArrayBufferWriter<FileEntity> existingFilesWriter = new(fileEntitiesLength);
+            //ArrayBufferWriter<FileEntity> notExistingFilesWriter = new(fileEntitiesLength);
 
             try
             {
-                int maxDegreeOfParallelism = Math.Max(Math.Min(fileEntities.Length, (int)_serverConfig.ServerMaxDegreeOfParallelism), 1);
+                int maxDegreeOfParallelism = Math.Max(Math.Min(fileEntitiesLength, (int)_serverConfig.ServerMaxDegreeOfParallelism), 1);
 
                 _ = Parallel.For(
                     0,
-                    fileEntities.Length,
+                    fileEntitiesLength,
                     parallelOptions: new() { MaxDegreeOfParallelism = maxDegreeOfParallelism },
-                    (index) =>
+                    localInit: () =>
+                    {
+                        // don't forget to ArrayPoolBufferWriter<T>.Dispose();
+                        //ArrayPoolBufferWriter<FileEntity> localExisting = new(fileEntitiesLength);
+                        //ArrayPoolBufferWriter<FileEntity> localMissing = new(fileEntitiesLength);
+                        ArrayBufferWriter<FileEntity> localExisting = new(fileEntitiesLength);
+                        ArrayBufferWriter<FileEntity> localMissing = new(fileEntitiesLength);
+                        return
+                        (
+                            existingCount: 0,
+                            missingCount: 0,
+                            existing: localExisting,
+                            missing: localMissing
+                        );
+                    },
+                    body: (index, _, localData) =>
                     {
                         var file = fileEntities.Span[index];
                         if (File.Exists(file.FilePhysicalFullPath))
                         {
-                            existingFiles[Interlocked.Increment(ref existingFilesIndex) - 1] = file;
+                            localData.existing.Write(file);
                         }
                         else
                         {
                             InformationFileMissing(file.FilePhysicalFullPath);
-                            notExistingFiles[Interlocked.Increment(ref notExistingFilesIndex) - 1] = file;
+                            localData.missing.Write(file);
                         }
+                        return localData;
+                    },
+                    localFinally: localData =>
+                    {
+                        existingFilesWriter.Write(localData.existing.WrittenSpan);
+                        notExistingFilesWriter.Write(localData.missing.WrittenSpan);
+                        localData.existing.Clear();
+                        localData.missing.Clear();
+                        //localData.existing.Dispose();
+                        //localData.missing.Dispose();
                     });
 
-                if (notExistingFilesIndex == 0)
+                if (notExistingFilesWriter.WrittenCount == 0)
                 {
-                    return new(fileEntities);
+                    existingFilesWriter.Clear();
+                    notExistingFilesWriter.Clear();
+
+                    return fileEntities;
                 }
                 else
                 {
-                    return new(CheckFilesExistingAsyncCore(existingFiles, existingFilesIndex, notExistingFiles, notExistingFilesIndex));
+                    var fileEntitiesChecked = await CheckFilesExistingAsyncCore(existingFilesWriter.WrittenMemory, notExistingFilesWriter.WrittenMemory);
+                    existingFilesWriter.Clear();
+                    notExistingFilesWriter.Clear();
+
+                    return fileEntitiesChecked;
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogGeneralErrorMessage(ex);
-                return new(fileEntities);
-            }
-            finally
-            {
-                poolFileEntity.Return(existingFiles, clearArray: true);
-                poolFileEntity.Return(notExistingFiles, clearArray: true);
+                return fileEntities;
             }
         }
         private async Task<ReadOnlyMemory<FileEntity>> CheckFilesExistingAsyncCore(
-            FileEntity[] existingFiles,
-            int existingFilesCount,
-            FileEntity[] notExistingFiles,
-            int notExistingFilesCount)
+            ReadOnlyMemory<FileEntity> existingFiles,
+            ReadOnlyMemory<FileEntity> notExistingFiles)
         {
-            var actualNotExisting = notExistingFiles.AsSpan(0, notExistingFilesCount).ToArray();
+            await ClearMetadataAsync(notExistingFiles);
+            await ClearThumbnailsAsync(notExistingFiles, true);
+            _ = await FileRepository.DeleteRangeAsync(notExistingFiles.AsArray());
 
-            await ClearMetadataAsync(actualNotExisting);
-            await ClearThumbnailsAsync(actualNotExisting, true);
-            _ = await FileRepository.DeleteRangeAsync(actualNotExisting);
-
-            return existingFiles.AsMemory(0, existingFilesCount);
+            return existingFiles;
         }
-        public async Task CheckAllDirectoriesExistingAsync()
+        public async Task CheckAllDirectoriesExistingAsync(int batchSize = 500)
         {
             DirectoryRepository.DabataseClearChangeTracker();
 
-            const int batchSize = 1000;
             int offset = 0;
             ReadOnlyMemory<DirectoryEntity> directoryEntities;
             while (true)
@@ -519,75 +578,97 @@ namespace DLNAServer.Features.MediaContent
 
             DirectoryRepository.DabataseClearChangeTracker();
         }
-        public ValueTask<ReadOnlyMemory<DirectoryEntity>> CheckDirectoriesExistingAsync(ReadOnlyMemory<DirectoryEntity> directoryEntities)
+        public async Task<ReadOnlyMemory<DirectoryEntity>> CheckDirectoriesExistingAsync(ReadOnlyMemory<DirectoryEntity> directoryEntities)
         {
             if (directoryEntities.IsEmpty)
             {
-                return new(directoryEntities);
+                return directoryEntities;
             }
 
-            var length = directoryEntities.Length;
+            var directoryEntitiesLength = directoryEntities.Length;
 
-            DirectoryEntity[] existingDirectories = poolDirectoryEntity.Rent(length);
-            int existingDirectoriesIndex = 0;
-
-            DirectoryEntity[] notExistingDirectories = poolDirectoryEntity.Rent(length);
-            int notExistingDirectoriesIndex = 0;
+            using ArrayPoolBufferWriter<DirectoryEntity> existingDirectoriesWriter = new(directoryEntitiesLength);
+            using ArrayPoolBufferWriter<DirectoryEntity> notExistingDirectoriesWriter = new(directoryEntitiesLength);
+            //ArrayBufferWriter<DirectoryEntity> existingDirectoriesWriter = new(directoryEntitiesLength);
+            //ArrayBufferWriter<DirectoryEntity> notExistingDirectoriesWriter = new(directoryEntitiesLength);
 
             try
             {
                 if (directoryEntities.IsEmpty)
                 {
-                    return new(directoryEntities);
+                    return directoryEntities;
                 }
 
-                var maxDegreeOfParallelism = Math.Max(Math.Min(directoryEntities.Length, (int)_serverConfig.ServerMaxDegreeOfParallelism), 1);
+                var maxDegreeOfParallelism = Math.Max(Math.Min(directoryEntitiesLength, (int)_serverConfig.ServerMaxDegreeOfParallelism), 1);
 
                 _ = Parallel.For(
                     0,
-                    directoryEntities.Length,
+                    directoryEntitiesLength,
                     parallelOptions: new() { MaxDegreeOfParallelism = maxDegreeOfParallelism },
-                    (index) =>
+                    localInit: () =>
+                    {
+                        // don't forget to ArrayPoolBufferWriter<T>.Dispose();
+                        //ArrayPoolBufferWriter<DirectoryEntity> localExisting = new(directoryEntitiesLength);
+                        //ArrayPoolBufferWriter<DirectoryEntity> localMissing = new(directoryEntitiesLength);
+                        ArrayBufferWriter<DirectoryEntity> localExisting = new(directoryEntitiesLength);
+                        ArrayBufferWriter<DirectoryEntity> localMissing = new(directoryEntitiesLength);
+                        return (
+                            existingCount: 0,
+                            missingCount: 0,
+                            existing: localExisting,
+                            missing: localMissing
+                        );
+                    },
+                    body: (index, _, localData) =>
                     {
                         var directory = directoryEntities.Span[index];
                         if (Directory.Exists(directory.DirectoryFullPath))
                         {
-                            existingDirectories[Interlocked.Increment(ref existingDirectoriesIndex) - 1] = directory;
+                            localData.existing.Write(directory);
                         }
                         else
                         {
                             InformationDirectoryMissing(directory.DirectoryFullPath);
-                            notExistingDirectories[Interlocked.Increment(ref notExistingDirectoriesIndex) - 1] = directory;
+                            localData.missing.Write(directory);
                         }
+                        return localData;
+                    },
+                    localFinally: localData =>
+                    {
+                        existingDirectoriesWriter.Write(localData.existing.WrittenSpan);
+                        notExistingDirectoriesWriter.Write(localData.missing.WrittenSpan);
+                        localData.existing.Clear();
+                        localData.missing.Clear();
+                        //localData.existing.Dispose();
+                        //localData.missing.Dispose();
                     });
 
-                if (notExistingDirectoriesIndex == 0)
+                if (notExistingDirectoriesWriter.WrittenCount == 0)
                 {
-                    return new(directoryEntities);
+                    existingDirectoriesWriter.Clear();
+                    notExistingDirectoriesWriter.Clear();
+                    return directoryEntities;
                 }
                 else
                 {
-                    return new(CheckDirectoriesExistingAsyncCore(existingDirectories, existingDirectoriesIndex, notExistingDirectories, notExistingDirectoriesIndex));
+                    var directoryEntitiesChecked = await CheckDirectoriesExistingAsyncCore(existingDirectoriesWriter.WrittenMemory, notExistingDirectoriesWriter.WrittenMemory);
+                    existingDirectoriesWriter.Clear();
+                    notExistingDirectoriesWriter.Clear();
+
+                    return directoryEntitiesChecked;
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogGeneralErrorMessage(ex);
-                return new(directoryEntities);
-            }
-            finally
-            {
-                poolDirectoryEntity.Return(existingDirectories, clearArray: true);
-                poolDirectoryEntity.Return(notExistingDirectories, clearArray: true);
+                return directoryEntities;
             }
         }
         private async Task<ReadOnlyMemory<DirectoryEntity>> CheckDirectoriesExistingAsyncCore(
-            DirectoryEntity[] existingDirectories,
-            int existingDirectoriesCount,
-            DirectoryEntity[] notExistingDirectories,
-            int notExistingDirectoriesCount)
+            ReadOnlyMemory<DirectoryEntity> existingDirectories,
+            ReadOnlyMemory<DirectoryEntity> notExistingDirectories)
         {
-            List<DirectoryEntity> actualNotExisting = [.. notExistingDirectories[..notExistingDirectoriesCount]];
+            List<DirectoryEntity> actualNotExisting = [.. notExistingDirectories.AsArray()];
 
             var notExistingSubdirectories = (await DirectoryRepository
                 .GetAllStartingByPathFullNamesAsync(
@@ -609,7 +690,7 @@ namespace DLNAServer.Features.MediaContent
 
             _ = await DirectoryRepository.DeleteRangeAsync(actualNotExisting);
 
-            return existingDirectories.AsMemory(0, existingDirectoriesCount);
+            return existingDirectories;
         }
         private async Task CheckParentDirectoriesAsync(string startingPathFullName)
         {
@@ -623,16 +704,14 @@ namespace DLNAServer.Features.MediaContent
             if (filesEntities.Length != 0 ||
                 directoryEntities.Length != 0)
             {
-                var missingDirectoriesFromFiles = filesEntities
-                    .Select(static (f) => f.Folder)
-                    .DistinctBy(static (f) => f)
-                    .Where(static (f) => !string.IsNullOrWhiteSpace(f))
-                    .ToArray();
-                var missingDirectoriesFromDirectories = directoryEntities
-                    .Select(static (f) => f.DirectoryFullPath)
-                    .DistinctBy(static (f) => f)
-                    .Where(static (f) => !string.IsNullOrWhiteSpace(f))
-                    .ToArray();
+                HashSet<string> missingDirectoriesFromFiles = new(filesEntities
+                    .Where(static (f) => !string.IsNullOrWhiteSpace(f.Folder))
+                    .Select(static (f) => f.Folder!),
+                    StringComparer.OrdinalIgnoreCase);
+                HashSet<string> missingDirectoriesFromDirectories = new(directoryEntities
+                    .Where(static (d) => !string.IsNullOrWhiteSpace(d.DirectoryFullPath))
+                    .Select(static (d) => d.DirectoryFullPath),
+                    StringComparer.OrdinalIgnoreCase);
 
                 var directoryEntitiesMissing = await GetNewDirectoryEntities(missingDirectoriesFromFiles.Union(missingDirectoriesFromDirectories));
 
@@ -655,8 +734,8 @@ namespace DLNAServer.Features.MediaContent
                 _ = await DirectoryRepository.GetAllAsync(useCachedResult: false);
             }
         }
-        private readonly static Comparison<FileEntity> fileComparison = static (a, b) => StringComparer.Ordinal.Compare(a.LC_Title, b.LC_Title);
-        private readonly static Comparison<DirectoryEntity> directoryComparison = static (a, b) => StringComparer.Ordinal.Compare(a.LC_Directory, b.LC_Directory);
+        private readonly static Comparison<FileEntity> fileComparison = static (a, b) => StringComparer.OrdinalIgnoreCase.Compare(a.Title, b.Title);
+        private readonly static Comparison<DirectoryEntity> directoryComparison = static (a, b) => StringComparer.OrdinalIgnoreCase.Compare(a.Directory, b.Directory);
         public async Task<(ReadOnlyMemory<FileEntity> fileEntities, ReadOnlyMemory<DirectoryEntity> directoryEntities, bool isRootFolder, uint totalMatches)> GetBrowseResultItems(
             string objectID,
             int startingIndex,
@@ -670,13 +749,15 @@ namespace DLNAServer.Features.MediaContent
             var stopwatch = Stopwatch.StartNew();
 
             var directoryStartObject = await DirectoryRepository.GetByIdAsync(objectID, asNoTracking: true, useCachedResult: true);
+            // take a mind, that this time is with included 1st connection to the DB
             var getDirectoryTime = stopwatch.Elapsed.TotalMilliseconds;
 
             bool isRootFolder = directoryStartObject == null;
             var getAllFilesInDirectoryTime = stopwatch.Elapsed.TotalMilliseconds;
             var refreshFoundFilesTime = stopwatch.Elapsed.TotalMilliseconds;
             var checkParentDirectoriesTime = stopwatch.Elapsed.TotalMilliseconds;
-            if (!isRootFolder)
+            if (!isRootFolder
+                && _serverConfig.SourceFolders.Contains(directoryStartObject!.DirectoryFullPath))
             {
                 // refresh directory for added files
                 var inputFiles = GetAllFilesInFolders([directoryStartObject!.DirectoryFullPath], true);
@@ -688,7 +769,7 @@ namespace DLNAServer.Features.MediaContent
             }
 
             // not possible to pagination for possibility of removed files / directories
-            (fileEntities, directoryEntities) = await GetFilesAndDirectoriesAsync(directoryStartObject);
+            (fileEntities, directoryEntities) = await GetFilesAndDirectoriesAsync(directoryStartObject, useCachedResult: false);
             var getEntitiesTime = stopwatch.Elapsed.TotalMilliseconds;
 
             // sorting before checking root folder, as for sorting additional files in root folder is by timestamps
@@ -701,14 +782,15 @@ namespace DLNAServer.Features.MediaContent
             {
                 (var fileEntitiesAdded, var directoryEntitiesAdded) = await GetFilesByLastAddedToDbAsync(_serverConfig.CountOfFilesByLastAddedToDb);
 
-                fileEntities = fileEntities.AsArray().Concat(fileEntitiesAdded.AsArray()).ToArray();
-                directoryEntities = directoryEntities.AsArray().Concat(directoryEntitiesAdded.AsArray()).ToArray();
+                fileEntities = (FileEntity[])[.. fileEntities.Span, .. fileEntitiesAdded.Span];
+                directoryEntities = (DirectoryEntity[])[.. directoryEntities.Span, .. directoryEntitiesAdded.Span];
             }
             var addAdditionalEntitiesTime = stopwatch.Elapsed.TotalMilliseconds;
 
             uint totalMatches = _serverConfig.ServerIgnoreRequestedCountAttributeFromRequest
                 ? (uint)(fileEntities.Length + directoryEntities.Length)
                 : FilterEntities(startingIndex, requestedCount, ref fileEntities, ref directoryEntities);
+
             var filterEntitiesTime = stopwatch.Elapsed.TotalMilliseconds;
 
             // possible to return less objects with this checking, but client will request rest of them in next request
@@ -719,7 +801,14 @@ namespace DLNAServer.Features.MediaContent
             directoryEntities = await CheckDirectoriesExistingAsync(directoryEntities);
             var checkDirectoriesExistingTime = stopwatch.Elapsed.TotalMilliseconds;
 
-            await MediaProcessingService.FillEmptyInfoAsync(fileEntities.AsArray(), setCheckedForFailed: true);
+            var filledEmptyInfo = await MediaProcessingService.FillEmptyInfoAsync(fileEntities.AsArray(), setCheckedForFailed: false);
+            if (filledEmptyInfo
+                || countBeforeCheck != (fileEntities.Length + directoryEntities.Length))
+            {
+                // refresh database data in MemoryCache
+                _ = await GetFilesAndDirectoriesAsync(directoryStartObject, useCachedResult: false);
+            }
+
             var fillEmptyData = stopwatch.Elapsed.TotalMilliseconds;
             var endTime = DateTime.Now;
 
@@ -764,14 +853,16 @@ namespace DLNAServer.Features.MediaContent
 
             uint totalMatches = (uint)(directoryCount + fileCount);
 
-            directoryEntities = directoryEntities.AsArray().Skip(startingIndex).Take(requestedCount).ToArray();
-            if (directoryCount == 0)
+            int directoryStart = Math.Min(startingIndex, directoryCount);
+            int directoryLength = Math.Min(requestedCount, Math.Max(0, directoryCount - directoryStart));
+            directoryEntities = directoryEntities.Slice(directoryStart, directoryLength).ToArray();
+
+            int remaining = requestedCount - directoryLength;
+            if (remaining > 0)
             {
-                fileEntities = fileEntities.AsArray().Skip(startingIndex).Take(requestedCount).ToArray();
-            }
-            else if (directoryEntities.Length < requestedCount)
-            {
-                fileEntities = fileEntities.AsArray().Skip(startingIndex - directoryCount).Take(requestedCount - directoryEntities.Length).ToArray();
+                int fileStart = Math.Max(startingIndex - directoryCount, 0);
+                int fileLength = Math.Min(remaining, Math.Max(0, fileCount - fileStart));
+                fileEntities = fileEntities.Slice(fileStart, fileLength).ToArray();
             }
             else
             {
@@ -802,11 +893,11 @@ namespace DLNAServer.Features.MediaContent
 
             FileRepository.DabataseClearChangeTracker();
         }
-        public async Task ClearThumbnailsAsync(IEnumerable<FileEntity> files, bool deleteThumbnailFile = true)
+        public async Task ClearThumbnailsAsync(ReadOnlyMemory<FileEntity> files, bool deleteThumbnailFile = true)
         {
             if (deleteThumbnailFile)
             {
-                Partitioner.Create(files)
+                Partitioner.Create(files.AsArray())
                     .AsParallel()
                     .Where(static (f) => f != null
                         && !string.IsNullOrEmpty(f.Thumbnail?.ThumbnailFilePhysicalFullPath))
@@ -816,19 +907,21 @@ namespace DLNAServer.Features.MediaContent
             }
 
             var filesProperty = files
+                .AsArray()
+                .Where(static (f) => f != null)
                 .Select(static (f) => f.FilePhysicalFullPath)
                 .ToHashSet();
 
             _ = await ThumbnailRepository.ExecuteUpdateAsync(
                 predicate: fe => filesProperty.Contains(fe.FilePhysicalFullPath),
                 setPropertyCalls: static (fe) => fe
-                    .SetProperty(static (fp) => fp.ThumbnailDataId, static (fp) => null),
+                    .SetProperty(static (fp) => fp.ThumbnailDataId, static (_) => null),
                 reloadTrackedEntities: false);
             _ = await FileRepository.ExecuteUpdateAsync(
                 predicate: fe => filesProperty.Contains(fe.FilePhysicalFullPath),
                 setPropertyCalls: static (fe) => fe
-                    .SetProperty(static (fp) => fp.IsThumbnailChecked, static (fp) => false)
-                    .SetProperty(static (fp) => fp.ThumbnailId, static (fp) => null),
+                    .SetProperty(static (fp) => fp.IsThumbnailChecked, static (_) => false)
+                    .SetProperty(static (fp) => fp.ThumbnailId, static (_) => null),
                 reloadTrackedEntities: false);
 
             _ = await ThumbnailDataRepository.ExecuteDeleteAsync(
@@ -838,12 +931,16 @@ namespace DLNAServer.Features.MediaContent
                 predicate: md => filesProperty.Contains(md.FilePhysicalFullPath),
                 reloadTrackedEntities: false);
 
-            files.AsParallel().ForAll(static (fe) =>
-            {
-                fe.IsThumbnailChecked = false;
-                fe.ThumbnailId = null;
-                fe.Thumbnail = null;
-            });
+            files
+                .AsArray()
+                .AsParallel()
+                .Where(static (f) => f != null)
+                .ForAll(static (fe) =>
+                {
+                    fe.IsThumbnailChecked = false;
+                    fe.ThumbnailId = null;
+                    fe.Thumbnail = null;
+                });
 
             _ = await FileRepository.DbContext.Database.ExecuteSqlRawAsync("VACUUM;");
         }
@@ -868,19 +965,21 @@ namespace DLNAServer.Features.MediaContent
 
             FileRepository.DabataseClearChangeTracker();
         }
-        public async Task ClearMetadataAsync(IEnumerable<FileEntity> files)
+        public async Task ClearMetadataAsync(ReadOnlyMemory<FileEntity> files)
         {
             var filesProperty = files
+                .AsArray()
+                .Where(static (f) => f != null)
                 .Select(static (f) => f.FilePhysicalFullPath)
                 .ToHashSet();
 
             _ = await FileRepository.ExecuteUpdateAsync(
                 predicate: fe => filesProperty.Contains(fe.FilePhysicalFullPath),
                 setPropertyCalls: static (fe) => fe
-                    .SetProperty(static (fp) => fp.IsMetadataChecked, static (fp) => false)
-                    .SetProperty(static (fp) => fp.AudioMetadataId, static (fp) => null)
-                    .SetProperty(static (fp) => fp.VideoMetadataId, static (fp) => null)
-                    .SetProperty(static (fp) => fp.SubtitleMetadataId, static (fp) => null),
+                    .SetProperty(static (fp) => fp.IsMetadataChecked, static (_) => false)
+                    .SetProperty(static (fp) => fp.AudioMetadataId, static (_) => null)
+                    .SetProperty(static (fp) => fp.VideoMetadataId, static (_) => null)
+                    .SetProperty(static (fp) => fp.SubtitleMetadataId, static (_) => null),
                 reloadTrackedEntities: false);
 
             _ = await AudioMetadataRepository.ExecuteDeleteAsync(
@@ -893,16 +992,20 @@ namespace DLNAServer.Features.MediaContent
                 predicate: md => filesProperty.Contains(md.FilePhysicalFullPath),
                 reloadTrackedEntities: false);
 
-            files.AsParallel().ForAll(static (fe) =>
-            {
-                fe.IsMetadataChecked = false;
-                fe.AudioMetadataId = null;
-                fe.VideoMetadataId = null;
-                fe.SubtitleMetadataId = null;
-                fe.AudioMetadata = null;
-                fe.VideoMetadata = null;
-                fe.SubtitleMetadata = null;
-            });
+            files
+                .AsArray()
+                .AsParallel()
+                .Where(static (f) => f != null)
+                .ForAll(static (fe) =>
+                {
+                    fe.IsMetadataChecked = false;
+                    fe.AudioMetadataId = null;
+                    fe.VideoMetadataId = null;
+                    fe.SubtitleMetadataId = null;
+                    fe.AudioMetadata = null;
+                    fe.VideoMetadata = null;
+                    fe.SubtitleMetadata = null;
+                });
 
             _ = await FileRepository.DbContext.Database.ExecuteSqlRawAsync("VACUUM;");
         }

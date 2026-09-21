@@ -5,7 +5,7 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ContentDirectory
 {
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider adding the 'required' modifier or declaring as nullable.
     [XmlType(TypeName = "item", Namespace = XmlNamespaces.NS_DIDL)]
-    public class BrowseItem
+    public sealed class BrowseItem
     {
         [XmlAttribute("id")]
         public string ObjectID { get; set; }
@@ -85,7 +85,7 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ContentDirectory
         public string? Icon { get; set; }
 
     }
-    public class Resource
+    public sealed class Resource
     {
         /// <summary>
         /// <b>res@size</b><br />

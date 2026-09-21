@@ -7,7 +7,7 @@ using System.Reflection;
 
 namespace DLNAServer.Database.Entities.Configurations
 {
-    public class BaseEntityConfiguration<TEntity> : IEntityTypeConfiguration<TEntity> where TEntity : BaseEntity
+    public sealed class BaseEntityConfiguration<TEntity> : IEntityTypeConfiguration<TEntity> where TEntity : BaseEntity
     {
         public void Configure(EntityTypeBuilder<TEntity> builder)
         {
@@ -27,21 +27,32 @@ namespace DLNAServer.Database.Entities.Configurations
                 .IsRequired(false)
                 .ValueGeneratedOnUpdate();
 
-            // Configure properties of the entity
-            var properties = typeof(TEntity).GetProperties();
+            // Intern string names, for less 
+            var entityType = typeof(TEntity);
+            _ = string.Intern(entityType.Name);
+            _ = string.Intern(entityType.FullName ?? string.Empty);
+            _ = string.Intern(entityType.Namespace ?? string.Empty);
+            var properties = entityType.GetProperties();
             foreach (var property in properties)
             {
+                _ = string.Intern(property.Name);
+            }
+
+            // Configure properties of the entity
+            foreach (var property in properties)
+            {
+                var propertyName = string.Intern(property.Name);
                 {
                     // Check if the property has the LowercaseAttribute
                     var lowercaseAttribute = property.GetCustomAttribute<LowercaseAttribute>();
                     if (lowercaseAttribute != null
-                        && lowercaseAttribute.PropertyName is string propertyName
-                        && properties.Any(p => p.Name == propertyName))
+                        && lowercaseAttribute.PropertyName is string lowecasePropertyName
+                        && properties.Any(p => p.Name == lowecasePropertyName))
                     {
                         // If the attribute is present, apply the computed column logic to convert it to lowercase
-                        _ = builder.Property(property.Name)
+                        _ = builder.Property(propertyName)
                             //.HasComputedColumnSql($"LOWER([{lowercaseAttribute.PropertyName}])", stored: true)
-                            .HasComputedColumnSql($"LOWER(`{lowercaseAttribute.PropertyName}`)", stored: true)
+                            .HasComputedColumnSql($"LOWER(`{lowecasePropertyName}`)", stored: true)
                             .ValueGeneratedOnAddOrUpdate();
                     }
 
@@ -50,20 +61,22 @@ namespace DLNAServer.Database.Entities.Configurations
                     if (internStringAttribute != null
                         && (property.PropertyType == typeof(string)))
                     {
-                        _ = builder.Property(property.Name)
-                            .HasConversion(new InternStringConverter());
+                        _ = builder.Property(propertyName)
+                            .HasConversion(_internStringConverter);
                     }
-
+                    
                     // Check if the property has the StringCacheAttribute
                     var cacheStringAttribute = property.GetCustomAttribute<StringCacheAttribute>();
                     if (cacheStringAttribute != null
                         && (property.PropertyType == typeof(string)))
                     {
-                        _ = builder.Property(property.Name)
-                            .HasConversion(new StringCacheConverter());
+                        _ = builder.Property(propertyName)
+                            .HasConversion(_stringCacheConverter);
                     }
                 }
             }
         }
+        private static readonly InternStringConverter _internStringConverter = new();
+        private static readonly StringCacheConverter _stringCacheConverter = new();
     }
 }

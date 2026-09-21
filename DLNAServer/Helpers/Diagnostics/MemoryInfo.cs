@@ -27,12 +27,16 @@ namespace DLNAServer.Helpers.Diagnostics
         public static Dictionary<string, object> ProcessMemoryInfo()
         {
             const double fromBtoMB = 1024 * 1024;
+            var memoryInfo = GC.GetGCMemoryInfo();
             double allocated = GC.GetTotalMemory(forceFullCollection: false) / fromBtoMB;
-            double totalCommittedBytes = GC.GetGCMemoryInfo().TotalCommittedBytes / fromBtoMB;
-            double totalAvailableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / fromBtoMB;
-            double memoryLoadBytes = GC.GetGCMemoryInfo().MemoryLoadBytes / fromBtoMB;
-            double heapSizeBytes = GC.GetGCMemoryInfo().HeapSizeBytes / fromBtoMB;
-            long pinnedObjectsCount = GC.GetGCMemoryInfo().PinnedObjectsCount;
+            double totalCommittedBytes = memoryInfo.TotalCommittedBytes / fromBtoMB;
+            double totalAvailableMemoryBytes = memoryInfo.TotalAvailableMemoryBytes / fromBtoMB;
+            double memoryLoadBytes = memoryInfo.MemoryLoadBytes / fromBtoMB;
+            double heapSizeBytes = memoryInfo.HeapSizeBytes / fromBtoMB;
+            long pinnedObjectsCount = memoryInfo.PinnedObjectsCount;
+            bool concurent = memoryInfo.Concurrent;
+            long thisGCIndex = memoryInfo.Index;
+            var generation = memoryInfo.Generation;
 
             using var process = Process.GetCurrentProcess();
             double privateMemorySize64 = process.PrivateMemorySize64 / fromBtoMB;
@@ -43,6 +47,7 @@ namespace DLNAServer.Helpers.Diagnostics
             double pagedSystemMemorySize64 = process.PagedSystemMemorySize64 / fromBtoMB;
             double virtualMemorySize64 = process.VirtualMemorySize64 / fromBtoMB;
             string mainWindowTitle = process.MainWindowTitle;
+
             DateTime startTime = process.StartTime;
             int threadCount = process.Threads.Count;
             Dictionary<System.Diagnostics.ThreadState, Dictionary<string, int>> threadStatusWaitReason = process
@@ -85,9 +90,9 @@ namespace DLNAServer.Helpers.Diagnostics
                 { "GC - Is Server GC", GCSettings.IsServerGC },
                 { "GC - Large Object Heap (LOH) compaction mode", $"{GCSettings.LargeObjectHeapCompactionMode}"},
                 { "GC - Latency mode ", $"{GCSettings.LatencyMode}" },
-                { "GC - Is Concurrent (background) GC", GC.GetGCMemoryInfo().Concurrent },
-                { "GC - Index of this GC", GC.GetGCMemoryInfo().Index },
-                { "GC - Generation of this GC", GC.GetGCMemoryInfo().Generation },
+                { "GC - Is Concurrent (background) GC", concurent },
+                { "GC - Index of this GC", thisGCIndex },
+                { "GC - Generation of this GC", generation },
                 { "Threads", threadCount }
             };
             foreach (var threadState in threadStatusWaitReason)
@@ -96,7 +101,7 @@ namespace DLNAServer.Helpers.Diagnostics
             }
 
             var index = 0;
-            foreach (var generationInfo in GC.GetGCMemoryInfo().GenerationInfo)
+            foreach (var generationInfo in memoryInfo.GenerationInfo)
             {
                 data.Add("Generation Info " + index + " - Fragmentation before bytes", $"{generationInfo.FragmentationBeforeBytes}");
                 data.Add("Generation Info " + index + " - Fragmentation after bytes", $"{generationInfo.FragmentationAfterBytes}");

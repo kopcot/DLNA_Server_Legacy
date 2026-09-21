@@ -119,26 +119,30 @@ namespace DLNAServer.Helpers.Logger
             _logWarningFallbackError(logger, action, $"{remoteIpAddress}:{remotePort}", $"{localIpAddress}:{localPort}", path, method, null);
         }
 
-        private static readonly Action<ILogger, Exception?> _logWarningOperationCanceled =
-        LoggerMessage.Define(
+        private static readonly Action<ILogger, string, int, Exception?> _logWarningOperationCanceled =
+        LoggerMessage.Define<string, int>(
             LogLevel.Warning,
             new EventId(3, "OperationCanceled"),
-            "Operation canceled");
+            "Operation canceled\n{MethodName}:{LineNumber}");
         public static void LogWarningOperationCanceled(
-            ILogger logger)
+            ILogger logger,
+            [CallerLineNumber] int lineNumber = 0,
+            [CallerMemberName] string methodName = "")
         {
-            _logWarningOperationCanceled(logger, null);
+            _logWarningOperationCanceled(logger, methodName, lineNumber, null);
         }
 
-        private static readonly Action<ILogger, Exception?> _logWarningTaskCanceled =
-        LoggerMessage.Define(
+        private static readonly Action<ILogger, string, int, Exception?> _logWarningTaskCanceled =
+        LoggerMessage.Define<string, int>(
             LogLevel.Warning,
             new EventId(4, "TaskCanceled"),
-            "Task canceled");
+            "Task canceled\n{MethodName}:{LineNumber}");
         public static void LogWarningTaskCanceled(
-            ILogger logger)
+            ILogger logger,
+            [CallerLineNumber] int lineNumber = 0,
+            [CallerMemberName] string methodName = "")
         {
-            _logWarningTaskCanceled(logger, null);
+            _logWarningTaskCanceled(logger, methodName, lineNumber, null);
         }
 
         private static readonly Action<ILogger, Exception?> _logInformationRestartCommand =
@@ -150,6 +154,19 @@ namespace DLNAServer.Helpers.Logger
             ILogger logger)
         {
             _logInformationRestartCommand(logger, null);
+        }
+        private static readonly Action<ILogger, string, string, int, Exception?> _logInformationCancelationRequested =
+        LoggerMessage.Define<string, string, int>(
+            LogLevel.Information,
+            new EventId(6, "CancellationRequested"),
+            "Cancellation requested\n{AdditionalInfo}\n{MethodName}:{LineNumber}");
+        public static void InformationCancellationRequested(
+            ILogger logger,
+            string additionalInfo,
+            [CallerMemberName] string methodName = "",
+            [CallerLineNumber] int lineNumber = 0)
+        {
+            _logInformationCancelationRequested(logger, additionalInfo, methodName, lineNumber, null);
         }
 
         #endregion Common messages

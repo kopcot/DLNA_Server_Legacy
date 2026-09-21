@@ -8,7 +8,7 @@ namespace DLNAServer.Database.Entities
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider adding the 'required' modifier or declaring as nullable.
     [Index(propertyName: nameof(FilePhysicalFullPath), IsUnique = true)]
     [Table(nameof(DlnaDbContext.MediaAudioEntities))] // needed as in DlnaDbContext is in plural 
-    public class MediaAudioEntity : BaseEntity
+    public sealed class MediaAudioEntity : BaseEntity
     {
         [MaxLength(4096, ErrorMessage = $"File full path cannot exceed 4096 characters. Property {nameof(FilePhysicalFullPath)}")]
         [StringCache]

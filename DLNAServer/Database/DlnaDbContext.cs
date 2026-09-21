@@ -8,7 +8,7 @@ using System.Text;
 
 namespace DLNAServer.Database
 {
-    public class DlnaDbContext : DbContext, ITerminateAble
+    public sealed class DlnaDbContext : DbContext, ITerminateAble
     {
         private readonly ILogger<DlnaDbContext> _logger;
         private readonly ServerConfig _serverConfig;
@@ -70,11 +70,15 @@ namespace DLNAServer.Database
                 // !!! locks the database while running command !!!
                 _ = sb.Append("VACUUM; ");
 
+                // release unused memory pages back to the OS
+                _ = sb.Append("PRAGMA shrink_memory; ");
+
                 _ = await this.Database.ExecuteSqlRawAsync(sb.ToString(), cancellationToken);
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
+                _logger.LogGeneralErrorMessage(ex);
                 return false;
             }
         }
@@ -197,26 +201,24 @@ namespace DLNAServer.Database
 
         private void ChangeTrackerModify()
         {
-            var maxDegreeOfParallelism = Math.Max(Math.Min(ChangeTracker.Entries().Count(), (int)_serverConfig.ServerMaxDegreeOfParallelism), 1);
-
-            _ = Parallel.ForEach(
-                ChangeTracker.Entries<BaseEntity>(),
-                parallelOptions: new() { MaxDegreeOfParallelism = maxDegreeOfParallelism },
-                static (entry) =>
+            foreach (var entry in ChangeTracker.Entries())
+            {
+                switch (entry.State)
                 {
-                    switch (entry.State)
-                    {
-                        //case EntityState.Added:
+                    //case EntityState.Added:
+                    //    break;
+                    case EntityState.Modified:
+                        if (entry.Entity is BaseEntity entity)
+                        {
+                            entity.ModifiedInDB = DateTime.Now;
+                        }
+                        break;
+                        //case EntityState.Deleted:
                         //    break;
-                        case EntityState.Modified:
-                            entry.Entity.ModifiedInDB = DateTime.Now;
-                            break;
-                            //case EntityState.Deleted:
-                            //    break;
-                            //case EntityState.Unchanged:
-                            //    break;
-                    }
-                });
+                        //case EntityState.Unchanged:
+                        //    break;
+                }
+            }
         }
         #endregion
     }

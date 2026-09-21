@@ -7,7 +7,7 @@ using System.Net;
 
 namespace DLNAServer.Types.UPNP
 {
-    public class UPNPDevices : IUPNPDevices
+    public sealed class UPNPDevices : IUPNPDevices
     {
         private readonly ServerConfig _serverConfig;
         private readonly IIP _ip;

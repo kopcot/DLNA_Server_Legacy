@@ -18,5 +18,21 @@
                 }
             }
         }
+        public static int GetDirectoryDepth(string? actualFolder)
+        {
+            if (actualFolder == null)
+            {
+                return 0;
+            }
+
+            DirectoryInfo directoryInfoDepthCount = new(actualFolder);
+            int depth = 0;
+            while (directoryInfoDepthCount.Parent != null)
+            {
+                depth++;
+                directoryInfoDepthCount = directoryInfoDepthCount.Parent;
+            }
+            return depth;
+        }
     }
 }

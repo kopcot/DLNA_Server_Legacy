@@ -7,7 +7,7 @@ namespace DLNAServer.Helpers.Attributes
     /// <summary>
     /// Identifies an action that supports the HTTP SUBSCRIBE method.
     /// </summary>
-    public class HttpSubscribeAttribute : HttpMethodAttribute
+    public sealed class HttpSubscribeAttribute : HttpMethodAttribute
     {
         private static readonly IEnumerable<string> _supportedMethods = ["SUBSCRIBE"];
 
@@ -32,7 +32,7 @@ namespace DLNAServer.Helpers.Attributes
     /// <summary>
     /// Identifies an action that supports the HTTP UNSUBSCRIBE method.
     /// </summary>
-    public class HttpUnsubscribeAttribute : HttpMethodAttribute
+    public sealed class HttpUnsubscribeAttribute : HttpMethodAttribute
     {
         private static readonly IEnumerable<string> _supportedMethods = ["UNSUBSCRIBE"];
 

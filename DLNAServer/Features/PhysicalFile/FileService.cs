@@ -12,7 +12,7 @@ namespace DLNAServer.Features.PhysicalFile
         {
             _logger = logger;
         }
-        public async Task<ReadOnlyMemory<byte>?> ReadFileAsync(string filePath, long maxSizeOfFile = long.MaxValue)
+        public async Task<ReadOnlyMemory<byte>?> ReadFileAsync(string filePath, long maxSizeOfFile = long.MaxValue, CancellationToken cancellationToken = default)
         {
             //const int bufferSize = 64 * 1_024; // less as 85,000 bytes in size for not need to use Large Object Heap (LOH) 
             try
@@ -35,10 +35,26 @@ namespace DLNAServer.Features.PhysicalFile
                     );
                     return null;
                 }
-
-                using (CancellationTokenSource cts = new(TimeSpanValues.TimeMin10))
+                
+                using (CancellationTokenSource timeoutCts = new(TimeSpanValues.TimeMin10))
+                using (CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token))
                 {
-                    return await File.ReadAllBytesAsync(filePath, cts.Token);
+                    // versions with MemoryMappedFile, StreamReader unnecessary,
+                    // no any real benefit , as it is return whole byte[]
+                    try
+                    {
+                        return await File.ReadAllBytesAsync(filePath, linkedCts.Token);
+                    }
+                    catch (OperationCanceledException ex) when (timeoutCts.IsCancellationRequested)
+                    {
+                        _logger.LogWarning($"File read timeout. {ex.Message}");
+                        return null;
+                    }
+                    catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+                    {
+                        _logger.LogDebug($"Client disconnected. {ex.Message}");
+                        throw;
+                    }
                 }
             }
             catch (Exception ex)

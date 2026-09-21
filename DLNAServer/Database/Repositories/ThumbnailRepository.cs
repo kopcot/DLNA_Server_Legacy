@@ -7,7 +7,7 @@ using Microsoft.Extensions.Caching.Memory;
 
 namespace DLNAServer.Database.Repositories
 {
-    public class ThumbnailRepository : BaseRepository<ThumbnailEntity>, IThumbnailRepository
+    public sealed class ThumbnailRepository : BaseRepository<ThumbnailEntity>, IThumbnailRepository
     {
         public ThumbnailRepository(DlnaDbContext dbContext, IMemoryCache memoryCache, ILogger<ThumbnailRepository> logger)
             : base(dbContext, memoryCache, logger, nameof(ThumbnailRepository))
@@ -25,9 +25,9 @@ namespace DLNAServer.Database.Repositories
             pathFullName = pathFullName.ToLower(culture: System.Globalization.CultureInfo.InvariantCulture);
             var memoryDataResult = GetAllWithCacheAsync(
                 queryAction: DbSet
-                    .IncludeChildEntities(DefaultInclude)
                     .Where(t => t.LC_ThumbnailFilePhysicalFullPath != null
                         && EF.Functions.Collate(t.LC_ThumbnailFilePhysicalFullPath, "NOCASE").Equals(pathFullName))
+                    .IncludeChildEntities(DefaultInclude)
                     .OrderEntitiesByDefault(DefaultOrderBy),
                 cacheKey: GetCacheKey<ThumbnailEntity[]>([pathFullName]),
                 cacheDuration: defaultCacheDuration,

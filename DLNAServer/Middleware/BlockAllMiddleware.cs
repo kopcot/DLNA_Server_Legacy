@@ -2,7 +2,7 @@
 
 namespace DLNAServer.Middleware
 {
-    public class BlockAllMiddleware
+    public sealed class BlockAllMiddleware
     {
         private readonly RequestDelegate _next;
         private readonly IApiBlockerService _blockerService;

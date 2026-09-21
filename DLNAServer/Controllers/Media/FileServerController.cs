@@ -7,6 +7,7 @@ using DLNAServer.Features.Cache.Interfaces;
 using DLNAServer.Helpers.Logger;
 using DLNAServer.Types.DLNA;
 using Microsoft.AspNetCore.Mvc;
+using System.Threading;
 
 namespace DLNAServer.Controllers.Media
 {
@@ -20,6 +21,7 @@ namespace DLNAServer.Controllers.Media
         private readonly Lazy<IThumbnailRepository> _thumbnailRepositoryLazy;
         private readonly Lazy<IThumbnailDataRepository> _thumbnailDataRepositoryLazy;
         private readonly IFileMemoryCacheManager FileMemoryCache;
+        private readonly IFileMemoryCacheHandler FileMemoryHandler;
         private IFileRepository FileRepository => _fileRepositoryLazy.Value;
         private IThumbnailRepository ThumbnailRepository => _thumbnailRepositoryLazy.Value;
         private IThumbnailDataRepository ThumbnailDataRepository => _thumbnailDataRepositoryLazy.Value;
@@ -29,7 +31,8 @@ namespace DLNAServer.Controllers.Media
             Lazy<IFileRepository> fileRepositoryLazy,
             Lazy<IThumbnailRepository> thumbnailRepositoryLazy,
             Lazy<IThumbnailDataRepository> thumbnailDataRepositoryLazy,
-            IFileMemoryCacheManager fileMemoryCache)
+            IFileMemoryCacheManager fileMemoryCache,
+            IFileMemoryCacheHandler fileMemoryHandler)
         {
             _logger = logger;
             _serverConfig = serverConfig;
@@ -37,9 +40,10 @@ namespace DLNAServer.Controllers.Media
             _thumbnailRepositoryLazy = thumbnailRepositoryLazy;
             _thumbnailDataRepositoryLazy = thumbnailDataRepositoryLazy;
             FileMemoryCache = fileMemoryCache;
+            FileMemoryHandler = fileMemoryHandler;
         }
         [HttpGet("file/{fileGuid}")]
-        public async Task<IActionResult> GetMediaFileAsync([FromRoute] string fileGuid)
+        public async Task<IActionResult> GetMediaFileAsync([FromRoute] string fileGuid, CancellationToken cancellationToken)
         {
             LoggerHelper.LogDebugConnectionInformation(
                 _logger,
@@ -59,10 +63,11 @@ namespace DLNAServer.Controllers.Media
                 return NotFound($"File with id '{fileGuid}' not found");
             }
 
-            return GetMediaFile(file);
+            return GetMediaFile(file, cancellationToken);
         }
         [HttpGet("thumbnail/{thumbnailGuid}")]
-        public async Task<IActionResult> GetMediaFileThumbnailAsync([FromRoute] string thumbnailGuid)
+        [ResponseCache(Duration = 3600, Location = ResponseCacheLocation.Any, NoStore = false)]
+        public async Task<IActionResult> GetMediaFileThumbnailAsync([FromRoute] string thumbnailGuid, CancellationToken cancellationToken)
         {
             LoggerHelper.LogDebugConnectionInformation(
                 _logger,
@@ -81,9 +86,9 @@ namespace DLNAServer.Controllers.Media
                 return NotFound($"Thumbnail with id '{thumbnailGuid}' not found");
             }
 
-            return await GetMediaFileThumbnailAsync(file);
+            return await GetMediaFileThumbnailAsync(file, cancellationToken);
         }
-        private IActionResult GetMediaFile(FileEntity file)
+        private ActionResult GetMediaFile(FileEntity file, CancellationToken cancellationToken)
         {
             try
             {
@@ -114,8 +119,8 @@ namespace DLNAServer.Controllers.Media
                     }
                     else
                     {
-                        FileMemoryCache.CacheFileInBackground(
-                            file,
+                        FileMemoryHandler.TryAddFileToCache(
+                            file.Id,
                             TimeSpan.FromMinutes(_serverConfig.StoreFileInMemoryCacheAfterLoadInMinute));
                     }
                 }
@@ -140,7 +145,7 @@ namespace DLNAServer.Controllers.Media
                 return BadRequest(ex);
             }
         }
-        private async Task<IActionResult> GetMediaFileThumbnailAsync(ThumbnailEntity thumbnail)
+        private async Task<IActionResult> GetMediaFileThumbnailAsync(ThumbnailEntity thumbnail, CancellationToken cancellationToken)
         {
             try
             {
@@ -151,8 +156,7 @@ namespace DLNAServer.Controllers.Media
                 {
                     var thumbnailData = thumbnail.ThumbnailData
                         ?? await ThumbnailDataRepository.GetByIdAsync(thumbnail.ThumbnailDataId.Value, asNoTracking: true, useCachedResult: true);
-                    if (thumbnailData != null
-                        && thumbnailData.ThumbnailData != null)
+                    if (thumbnailData?.ThumbnailData != null)
                     {
                         InformationServingThumbnailFileFromDatabase(
                             connection?.RemoteIpAddress,
@@ -174,7 +178,10 @@ namespace DLNAServer.Controllers.Media
 
                 if (_serverConfig.UseMemoryCacheForStreamingFile)
                 {
-                    (var isCachedSuccessful, var fileMemoryByteMemory) = await FileMemoryCache.CacheFileAndReturnAsync(thumbnail.ThumbnailFilePhysicalFullPath, TimeSpanValues.TimeDays1);
+                    (var isCachedSuccessful, var fileMemoryByteMemory) = await FileMemoryCache.CacheFileAndReturnAsync(
+                        thumbnail.ThumbnailFilePhysicalFullPath, 
+                        TimeSpanValues.TimeDays1,
+                        cancellationToken: cancellationToken);
                     if (isCachedSuccessful)
                     {
                         InformationServingThumbnailFileFromCache(

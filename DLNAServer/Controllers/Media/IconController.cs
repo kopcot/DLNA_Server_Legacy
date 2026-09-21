@@ -21,7 +21,8 @@ namespace DLNAServer.Controllers.Media
             FileMemoryCache = fileMemoryCache;
         }
         [HttpGet("{fileName}")]
-        public async Task<IActionResult> GetIconFile([FromRoute] string fileName)
+        [ResponseCache(Duration = 3600, Location = ResponseCacheLocation.Any, NoStore = false)]
+        public async Task<IActionResult> GetIconFile([FromRoute] string fileName, CancellationToken cancellationToken)
         {
             LoggerHelper.LogDebugConnectionInformation(
                 _logger,
@@ -42,7 +43,11 @@ namespace DLNAServer.Controllers.Media
 
                 string filePath = Path.Combine([Directory.GetCurrentDirectory(), "Resources", "images", "icons", Path.GetFileName(fileName)]);
 
-                (var isCachedSuccessful, var fileMemoryByteMemory) = await FileMemoryCache.CacheFileAndReturnAsync(filePath, TimeSpanValues.TimeDays1, checkExistingInCache: true);
+                (var isCachedSuccessful, var fileMemoryByteMemory) = await FileMemoryCache.CacheFileAndReturnAsync(
+                    filePath, 
+                    TimeSpanValues.TimeDays1, 
+                    checkExistingInCache: true,
+                    cancellationToken);
                 if (isCachedSuccessful)
                 {
                     return File(fileMemoryByteMemory.AsStream(), mimeType, enableRangeProcessing: true);

@@ -7,7 +7,9 @@ using DLNAServer.Helpers.Logger;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
 using System.Linq.Expressions;
+using System.Text;
 
 namespace DLNAServer.Database.Repositories
 {
@@ -37,7 +39,7 @@ namespace DLNAServer.Database.Repositories
         }
         public async Task DatabaseShrinkMemoryAsync(CancellationToken cancellationToken = default)
         {
-            using (var transaction = await DbContext.Database.BeginTransactionAsync(cancellationToken))
+            await using (var transaction = await DbContext.Database.BeginTransactionAsync(cancellationToken))
             {
                 await DbContext.Database.ExecuteSqlRawAsync("PRAGMA shrink_memory; ", cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
@@ -62,7 +64,7 @@ namespace DLNAServer.Database.Repositories
         }
         public async Task<bool> DeleteAllAsync()
         {
-            using (var transaction = await DbContext.Database.BeginTransactionAsync())
+            await using (var transaction = await DbContext.Database.BeginTransactionAsync())
             {
                 _ = await DbSet.ExecuteDeleteAsync();
                 _ = await DbContext.SaveChangesAsync();
@@ -127,7 +129,7 @@ namespace DLNAServer.Database.Repositories
         }
         public async Task<bool> DeleteRangeAsync(IEnumerable<T> entities)
         {
-            using (var transaction = await DbContext.Database.BeginTransactionAsync())
+            await using (var transaction = await DbContext.Database.BeginTransactionAsync())
             {
                 DbSet.RemoveRange(entities);
                 _ = await DbContext.SaveChangesAsync();
@@ -137,7 +139,7 @@ namespace DLNAServer.Database.Repositories
         }
         public async Task<bool> DeleteRangeByGuidsAsync(IEnumerable<Guid> guids)
         {
-            using (var transaction = await DbContext.Database.BeginTransactionAsync())
+            await using (var transaction = await DbContext.Database.BeginTransactionAsync())
             {
                 var entities = await GetAllByIdsAsync(guids, false);
                 DbSet.RemoveRange(entities.AsArray());
@@ -160,11 +162,11 @@ namespace DLNAServer.Database.Repositories
         }
         public Task<ReadOnlyMemory<T>> GetAllAsync(bool withIncludes = true, bool asNoTracking = false, bool useCachedResult = true)
         {
-            var query = withIncludes
-                ? DbSet.IncludeChildEntities(DefaultInclude)
+            var query = asNoTracking
+                ? DbSet.AsNoTracking()
                 : DbSet;
-            query = asNoTracking
-                ? query.AsNoTracking()
+            query = withIncludes
+                ? query.IncludeChildEntities(DefaultInclude)
                 : query;
             query = query
                .OrderEntitiesByDefault(DefaultOrderBy);
@@ -178,11 +180,11 @@ namespace DLNAServer.Database.Repositories
         }
         public Task<ReadOnlyMemory<T>> GetAllAsync(int skip, int take, bool withIncludes = true, bool asNoTracking = false, bool useCachedResult = true)
         {
-            var query = withIncludes
-                ? DbSet.IncludeChildEntities(DefaultInclude)
+            var query = asNoTracking
+                ? DbSet.AsNoTracking()
                 : DbSet;
-            query = asNoTracking
-                ? query.AsNoTracking()
+            query = withIncludes
+                ? query.IncludeChildEntities(DefaultInclude)
                 : query;
             query = query
                .OrderEntitiesByDefault(DefaultOrderBy)
@@ -209,8 +211,8 @@ namespace DLNAServer.Database.Repositories
         {
             var memoryDataResult = GetAllWithCacheAsync(
                 queryAction: DbSet
-                        .IncludeChildEntities(DefaultInclude)
                         .Where(e => guids.Any(guid => guid == e.Id))
+                        .IncludeChildEntities(DefaultInclude)
                         .OrderEntitiesByDefault(DefaultOrderBy),
                 cacheKey: GetCacheKey<T[]>(guids.Select(static (g) => g.ToString())),
                 cacheDuration: defaultCacheDuration,
@@ -223,12 +225,10 @@ namespace DLNAServer.Database.Repositories
             return GetSingleWithCacheAsync(
                 queryAction: asNoTracking
                         ? DbSet
-                            .OrderEntitiesByDefault(DefaultOrderBy)
-                            .IncludeChildEntities(DefaultInclude)
                             .AsNoTracking()
+                            .IncludeChildEntities(DefaultInclude)
                             .FirstOrDefaultAsync(e => e.Id == guid)
                         : DbSet
-                            .OrderEntitiesByDefault(DefaultOrderBy)
                             .IncludeChildEntities(DefaultInclude)
                             .FirstOrDefaultAsync(e => e.Id == guid),
                 cacheKey: GetCacheKey<T>([asNoTracking.ToString(), guid.ToString()]),
@@ -247,11 +247,23 @@ namespace DLNAServer.Database.Repositories
         }
         public async Task<bool> AddRangeAsync(IEnumerable<T> entities)
         {
-            using (var transaction = await DbContext.Database.BeginTransactionAsync())
+            var autoDetectChangesEnabled = DbContext.ChangeTracker.AutoDetectChangesEnabled;
+            DbContext.ChangeTracker.AutoDetectChangesEnabled = false;
+
+            try
             {
-                await DbSet.AddRangeAsync(entities);
-                _ = await DbContext.SaveChangesAsync();
-                await transaction.CommitAsync();
+                await using (var transaction = await DbContext.Database.BeginTransactionAsync())
+                {
+                    var notTrackingEntities = entities.Where(e => !IsEntityTracked(e));
+
+                    DbSet.AddRange(notTrackingEntities);
+                    _ = await DbContext.SaveChangesAsync();
+                    await transaction.CommitAsync();
+                }
+            }
+            finally
+            {
+                DbContext.ChangeTracker.AutoDetectChangesEnabled = autoDetectChangesEnabled;
             }
             return true;
         }
@@ -271,28 +283,15 @@ namespace DLNAServer.Database.Repositories
         {
             if (useCachedResult)
             {
-                var resultAsMemory = await MemoryCache.GetOrCreateAsync(
-                    cacheKey,
-                    async entry =>
-                    {
-                        var data = await queryAction.ToArrayAsync();
+                if (MemoryCache.TryGetValue(cacheKey, out var result)
+                    && result is TResult[] resultArray)
+                {
+                    return resultArray;
+                }
 
-                        entry.Value = data.AsReadOnly();
-                        entry.SlidingExpiration = cacheDuration;
-                        entry.AbsoluteExpirationRelativeToNow = defaultCacheAbsoluteDuration;
-                        entry.Size = 1; // size is not important for entities vs physical cached file size
-
-                        _ = entry.RegisterPostEvictionCallback((_, _, _, _) =>
-                        {
-                            MemoryCache.CancelCacheKeyEviction(cacheKey, _logger);
-                        });
-
-                        return data;
-                    });
-
-                MemoryCache.ScheduleCacheKeyEviction(cacheKey, cacheDuration, _logger);
-
-                return resultAsMemory;
+                var dbData = await queryAction.ToArrayAsync();
+                var entryOptions = GetMemoryEntryOptions(cacheKey, cacheDuration);
+                return MemoryCache.Set(cacheKey, dbData, options: entryOptions);
             }
             else
             {
@@ -309,28 +308,16 @@ namespace DLNAServer.Database.Repositories
         {
             if (useCachedResult)
             {
-                var result = await MemoryCache.GetOrCreateAsync(
-                    cacheKey,
-                    async entry =>
-                    {
-                        var resultSingle = (await queryAction);
 
-                        entry.Value = resultSingle;
-                        entry.SlidingExpiration = cacheDuration;
-                        entry.AbsoluteExpirationRelativeToNow = defaultCacheAbsoluteDuration;
-                        entry.Size = 1; // size is not important for entities vs physical cached file size
+                if (MemoryCache.TryGetValue(cacheKey, out var result)
+                    && result is TResult resultSingle)
+                {
+                    return resultSingle;
+                }
 
-                        _ = entry.RegisterPostEvictionCallback((_, _, _, _) =>
-                        {
-                            MemoryCache.CancelCacheKeyEviction(cacheKey, _logger);
-                        });
-
-                        return resultSingle;
-                    });
-
-                MemoryCache.ScheduleCacheKeyEviction(cacheKey, cacheDuration, _logger);
-
-                return result;
+                var dbData = (await queryAction);
+                var entryOptions = GetMemoryEntryOptions(cacheKey, cacheDuration);
+                return MemoryCache.Set(cacheKey, dbData, options: entryOptions);
             }
             else
             {
@@ -339,14 +326,58 @@ namespace DLNAServer.Database.Repositories
                 return await queryAction;
             }
         }
+        private MemoryCacheEntryOptions GetMemoryEntryOptions(string cacheKey, TimeSpan cacheDuration)
+        {
+            var entryOptions = new MemoryCacheEntryOptions()
+            {
+                SlidingExpiration = cacheDuration,
+                AbsoluteExpirationRelativeToNow = defaultCacheAbsoluteDuration,
+                Size = 1, // size is not important for entities vs physical cached file size
+            }.RegisterPostEvictionCallback((_, _, _, _) =>
+            {
+                MemoryCache.CancelCacheKeyEviction(cacheKey, _logger);
+            });
 
+            MemoryCache.ScheduleCacheKeyEviction(cacheKey, cacheDuration, _logger);
+            return entryOptions;
+        }
+        private readonly StringBuilder stringBuilderCacheKey = new(128);
         protected string GetCacheKey<TResult>(IEnumerable<string>? additionalArgs = null, [System.Runtime.CompilerServices.CallerMemberName] string methodName = "")
         {
-            if (additionalArgs == null || !additionalArgs.Any())
+            //if (additionalArgs?.Any() != true)
+            //{
+            //    return string.Format("{0} {1} {2}", [_repositoryName, string.Intern(methodName), string.Intern(typeof(TResult).Name)]);
+            //}
+            //return string.Format("{0} {1} {2} {3}", [_repositoryName, string.Intern(methodName), string.Intern(typeof(TResult).Name), string.Join(';', additionalArgs)]);
+
+            stringBuilderCacheKey.Clear();
+            stringBuilderCacheKey.Append(_repositoryName).Append(' ')
+                .Append(string.Intern(methodName)).Append(' ')
+                .Append(string.Intern(typeof(TResult).Name));
+
+            if (additionalArgs?.Any() == true)
             {
-                return string.Format("{0} {1} {2}", [_repositoryName, methodName, typeof(TResult).Name]);
+                stringBuilderCacheKey.Append(' ');
+                foreach (var arg in additionalArgs)
+                {
+                    stringBuilderCacheKey.Append(arg).Append(';');
+                }
             }
-            return string.Format("{0} {1} {2} {3}", [_repositoryName, methodName, typeof(TResult).Name, string.Join(';', additionalArgs)]);
+
+            return stringBuilderCacheKey.ToString();
+        }
+        protected bool IsEntityTracked<TEntity>(TEntity? entity) where TEntity : BaseEntity
+        {
+            if (entity == null)
+            {
+                return false;
+            }
+
+            //var isTracked = DbSet.Local.Any(e => e.Id == entity.Id);
+
+            return DbContext.ChangeTracker.Entries<TEntity>()
+                .Any(e => e.Entity == entity
+                    || e.Property(static (ep) => ep.Id).Equals(entity.Id));
         }
         public Task ReloadTrackedEntitiesAsync(Expression<Func<T, bool>> predicate)
         {

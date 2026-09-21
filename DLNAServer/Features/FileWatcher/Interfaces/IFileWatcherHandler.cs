@@ -1,5 +1,5 @@
 ﻿using DLNAServer.Helpers.Interfaces;
-using System.Collections.Concurrent;
+using System.Threading.Channels;
 
 namespace DLNAServer.Features.FileWatcher.Interfaces
 {
@@ -7,6 +7,6 @@ namespace DLNAServer.Features.FileWatcher.Interfaces
     {
         void WatchPath(string pathToWatch);
         void EnableRaisingEvents(bool enable);
-        ConcurrentQueue<(string fileFullPath, string? fileFullPathOld, WatcherChangeTypes changeType, DateTime eventTimeUTC)> FileEventQueue { get; }
+        ChannelReader<(string fileFullPath, string? fileFullPathOld, WatcherChangeTypes changeType, DateTime eventTimeUTC)> FileEventChannelReader { get; }
     }
 }

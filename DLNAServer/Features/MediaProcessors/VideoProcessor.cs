@@ -1,4 +1,6 @@
-﻿using DLNAServer.Common;
+﻿using CommunityToolkit.HighPerformance;
+using CommunityToolkit.HighPerformance.Buffers;
+using DLNAServer.Common;
 using DLNAServer.Configuration;
 using DLNAServer.Database.Entities;
 using DLNAServer.Database.Repositories.Interfaces;
@@ -9,7 +11,6 @@ using DLNAServer.Helpers.Files;
 using DLNAServer.Helpers.Logger;
 using DLNAServer.Types.DLNA;
 using System.Buffers;
-using System.Collections.Concurrent;
 using Xabe.FFmpeg;
 using Xabe.FFmpeg.Exceptions;
 
@@ -22,7 +23,6 @@ namespace DLNAServer.Features.MediaProcessors
         private readonly IFileRepository FileRepository;
         private readonly IFileService FileService;
         private readonly IFFmpegService FFmpegService;
-        private readonly ArrayPool<FileEntity> poolFileEntity = ArrayPool<FileEntity>.Shared;
         public VideoProcessor(
             ILogger<VideoProcessor> logger,
             ServerConfig serverConfig,
@@ -40,35 +40,33 @@ namespace DLNAServer.Features.MediaProcessors
         {
             return FFmpegService.EnsureFFmpegDownloaded();
         }
-        public async Task FillEmptyInfoAsync(IEnumerable<FileEntity> fileEntities, bool setCheckedForFailed = true)
+        public async Task<bool> FillEmptyInfoAsync(IEnumerable<FileEntity> fileEntities, bool setCheckedForFailed = true)
         {
-            FileEntity[] bufferArray = poolFileEntity.Rent(fileEntities.Count());
-            try
-            {
-                int count = 0;
+            int estimated = fileEntities.TryGetNonEnumeratedCount(out int c) ? c
+                : fileEntities.Count();
 
-                Partitioner.Create(fileEntities)
-                    .AsParallel()
-                    .Where(static (fe) =>
-                           fe != null
-                        && fe.FileDlnaMime.ToDlnaMedia() == DlnaMedia.Video
-                        && (!fe.IsMetadataChecked || !fe.IsThumbnailChecked))
-                    .ForAll(fe =>
-                    {
-                        int index = Interlocked.Increment(ref count) - 1;
-                        if (index < bufferArray.Length)
-                        {
-                            bufferArray[index] = fe;
-                        }
-                    });
+            using ArrayPoolBufferWriter<FileEntity> writer = new(estimated);
+            //ArrayBufferWriter<FileEntity> writer = new(estimated);
 
-                var bufferMemory = bufferArray.AsMemory(0, count);
-                await RefreshInfoAsync(bufferMemory, setCheckedForFailed);
-            }
-            finally
+            foreach (var fe in fileEntities)
             {
-                poolFileEntity.Return(bufferArray, clearArray: true);
+                if (fe.FileDlnaMime.ToDlnaMedia() == DlnaMedia.Video
+                    && (!fe.IsMetadataChecked || !fe.IsThumbnailChecked))
+                {
+                    writer.Write(fe);
+                }
             }
+
+            if (writer.WrittenCount > 0)
+            {
+                await RefreshInfoAsync(writer.WrittenMemory, setCheckedForFailed);
+
+                writer.Clear();
+                return true;
+            }
+
+            writer.Clear();
+            return false;
         }
         private async Task RefreshInfoAsync(ReadOnlyMemory<FileEntity> fileEntities, bool setCheckedForFailed = true)
         {
@@ -118,7 +116,7 @@ namespace DLNAServer.Features.MediaProcessors
                         });
                 }
 
-                _ = await FileRepository.SaveChangesAsync();
+                var dummy = await FileRepository.SaveChangesAsync();
             }
             catch (Exception ex)
             {
@@ -126,35 +124,33 @@ namespace DLNAServer.Features.MediaProcessors
             }
         }
 
-        public async Task FillEmptyMetadataAsync(IEnumerable<FileEntity> fileEntities, bool setCheckedForFailed = true)
+        public async Task<bool> FillEmptyMetadataAsync(IEnumerable<FileEntity> fileEntities, bool setCheckedForFailed = true)
         {
-            FileEntity[] bufferArray = poolFileEntity.Rent(fileEntities.Count());
-            try
-            {
-                int count = 0;
+            int estimated = fileEntities.TryGetNonEnumeratedCount(out int c) ? c
+                : fileEntities.Count();
 
-                Partitioner.Create(fileEntities)
-                    .AsParallel()
-                    .Where(static (fe) =>
-                           fe != null
-                        && fe.FileDlnaMime.ToDlnaMedia() == DlnaMedia.Video
-                        && !fe.IsMetadataChecked)
-                    .ForAll(fe =>
-                    {
-                        int index = Interlocked.Increment(ref count) - 1;
-                        if (index < bufferArray.Length)
-                        {
-                            bufferArray[index] = fe;
-                        }
-                    });
+            using ArrayPoolBufferWriter<FileEntity> writer = new(estimated);
+            //ArrayBufferWriter<FileEntity> writer = new(estimated);
 
-                var bufferMemory = bufferArray.AsMemory(0, count);
-                await RefreshMetadataAsync(bufferMemory, setCheckedForFailed);
-            }
-            finally
+            foreach (var fe in fileEntities)
             {
-                poolFileEntity.Return(bufferArray, clearArray: true);
+                if (fe.FileDlnaMime.ToDlnaMedia() == DlnaMedia.Video
+                    && !fe.IsMetadataChecked)
+                {
+                    writer.Write(fe);
+                }
             }
+
+            if (writer.WrittenCount > 0)
+            {
+                await RefreshMetadataAsync(writer.WrittenMemory, setCheckedForFailed);
+
+                writer.Clear();
+                return true;
+            }
+
+            writer.Clear();
+            return false;
         }
         private async Task RefreshMetadataAsync(ReadOnlyMemory<FileEntity> fileEntities, bool setCheckedForFailed = true)
         {
@@ -215,14 +211,19 @@ namespace DLNAServer.Features.MediaProcessors
                 file.VideoMetadata = videoMetadata;
             }
 
-            if (videoMetadata != null ||
-               (setCheckedForFailed &&
-                    videoMetadata == null &&
-                    (DateTime.Now - file.CreatedInDB) > TimeSpanValues.TimeHours12))
+            if (videoMetadata != null)
             {
                 file.IsMetadataChecked = true;
 
                 InformationSetMetadata(file.FilePhysicalFullPath);
+            }
+            if (setCheckedForFailed &&
+                videoMetadata == null &&
+                (DateTime.Now - file.CreatedInDB) > TimeSpanValues.TimeHours12)
+            {
+                file.IsMetadataChecked = true;
+
+                WarningSetMetadataFailed(file.FilePhysicalFullPath);
             }
         }
 
@@ -270,10 +271,10 @@ namespace DLNAServer.Features.MediaProcessors
                         FilePhysicalFullPath = mediaInfo.Path,
                         Duration = videoStream.Duration,
                         Codec = !string.IsNullOrWhiteSpace(videoStream.Codec)
-                            ? string.Intern(videoStream.Codec)
+                            ? videoStream.Codec
                             : null,
                         Ratio = !string.IsNullOrWhiteSpace(videoStream.Ratio)
-                            ? string.Intern(videoStream.Ratio)
+                            ? videoStream.Ratio
                             : null,
                         Height = videoStream.Height,
                         Width = videoStream.Width,
@@ -305,12 +306,12 @@ namespace DLNAServer.Features.MediaProcessors
                         FilePhysicalFullPath = mediaInfo.Path,
                         Duration = audioStream.Duration,
                         Codec = !string.IsNullOrWhiteSpace(audioStream.Codec)
-                            ? string.Intern(audioStream.Codec)
+                            ? audioStream.Codec
                             : null,
                         Bitrate = audioStream.Bitrate,
                         Channels = audioStream.Channels,
                         Language = !string.IsNullOrWhiteSpace(audioStream.Language)
-                            ? string.Intern(audioStream.Language)
+                            ? audioStream.Language
                             : null,
                         SampleRate = audioStream.SampleRate
                     };
@@ -336,10 +337,10 @@ namespace DLNAServer.Features.MediaProcessors
                     {
                         FilePhysicalFullPath = mediaInfo.Path,
                         Language = !string.IsNullOrWhiteSpace(subtitleStream.Language)
-                            ? string.Intern(subtitleStream.Language)
+                            ? subtitleStream.Language
                             : null,
                         Codec = !string.IsNullOrWhiteSpace(subtitleStream.Codec)
-                            ? string.Intern(subtitleStream.Codec)
+                            ? subtitleStream.Codec
                             : null,
                     };
                 }
@@ -354,35 +355,33 @@ namespace DLNAServer.Features.MediaProcessors
                 return null;
             }
         }
-        public async Task FillEmptyThumbnailsAsync(IEnumerable<FileEntity> fileEntities, bool setCheckedForFailed = true)
+        public async Task<bool> FillEmptyThumbnailsAsync(IEnumerable<FileEntity> fileEntities, bool setCheckedForFailed = true)
         {
-            FileEntity[] bufferArray = poolFileEntity.Rent(fileEntities.Count());
-            try
-            {
-                int count = 0;
+            int estimated = fileEntities.TryGetNonEnumeratedCount(out int c) ? c
+                : fileEntities.Count();
 
-                Partitioner.Create(fileEntities)
-                    .AsParallel()
-                    .Where(static (fe) =>
-                           fe != null
-                        && fe.FileDlnaMime.ToDlnaMedia() == DlnaMedia.Video
-                        && !fe.IsThumbnailChecked)
-                    .ForAll(fe =>
-                    {
-                        int index = Interlocked.Increment(ref count) - 1;
-                        if (index < bufferArray.Length)
-                        {
-                            bufferArray[index] = fe;
-                        }
-                    });
+            using ArrayPoolBufferWriter<FileEntity> writer = new(estimated);
+            //ArrayBufferWriter<FileEntity> writer = new(estimated);
 
-                var bufferMemory = bufferArray.AsMemory(0, count);
-                await RefreshThumbnailsAsync(bufferMemory, setCheckedForFailed);
-            }
-            finally
+            foreach (var fe in fileEntities)
             {
-                poolFileEntity.Return(bufferArray, clearArray: true);
+                if (fe.FileDlnaMime.ToDlnaMedia() == DlnaMedia.Video
+                    && !fe.IsThumbnailChecked)
+                {
+                    writer.Write(fe);
+                }
             }
+
+            if (writer.WrittenCount > 0)
+            {
+                await RefreshThumbnailsAsync(writer.WrittenMemory, setCheckedForFailed);
+
+                writer.Clear();
+                return true;
+            }
+
+            writer.Clear();
+            return false;
         }
         private async Task RefreshThumbnailsAsync(ReadOnlyMemory<FileEntity> fileEntities, bool setCheckedForFailed = true)
         {
@@ -433,6 +432,8 @@ namespace DLNAServer.Features.MediaProcessors
                     dlnaMimeRequested: _serverConfig.DefaultDlnaMimeForVideoThumbnails);
 
                 if (thumbnailFileFullPath != null
+                    && !thumbnailData.IsEmpty
+                    && thumbnailData.AsArray().Length > 0
                     && new FileInfo(thumbnailFileFullPath) is FileInfo thumbnailFileInfo
                     && thumbnailFileInfo.Exists)
                 {
@@ -441,8 +442,8 @@ namespace DLNAServer.Features.MediaProcessors
                     {
                         FilePhysicalFullPath = file.FilePhysicalFullPath,
                         ThumbnailFileDlnaMime = dlnaMime!.Value,
-                        ThumbnailFileDlnaProfileName = dlnaProfileName != null ? string.Intern(dlnaProfileName) : null,
-                        ThumbnailFileExtension = string.Intern(thumbnailFileInfo.Extension),
+                        ThumbnailFileDlnaProfileName = dlnaProfileName != null ? dlnaProfileName : null,
+                        ThumbnailFileExtension = thumbnailFileInfo.Extension,
                         ThumbnailFilePhysicalFullPath = thumbnailFileFullPath,
                         ThumbnailFileSizeInBytes = thumbnailFileInfo.Length,
                         ThumbnailData = _serverConfig.StoreThumbnailsForLocalMoviesInDatabase
@@ -462,7 +463,7 @@ namespace DLNAServer.Features.MediaProcessors
                 {
                     file.IsThumbnailChecked = true;
 
-                    InformationSetThumbnail(file.FilePhysicalFullPath);
+                    WarningSetThumbnailFailed(file.FilePhysicalFullPath);
                 }
             }
             catch (Exception ex)

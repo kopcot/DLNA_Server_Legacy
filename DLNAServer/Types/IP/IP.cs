@@ -5,7 +5,7 @@ using System.Net.Sockets;
 
 namespace DLNAServer.Types.IP
 {
-    public class IP : IIP
+    public sealed class IP : IIP
     {
         public readonly ILogger _logger;
         public IP(ILogger<IP> logger)

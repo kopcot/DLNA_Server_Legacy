@@ -34,5 +34,9 @@
         {
             return _logScopeRecreatingFilesInfoChunk(logger);
         }
+        [LoggerMessage(8, LogLevel.Information, "Blocked all request for {hours} hours.")]
+        partial void InformationBlockedRequestStart(int hours);
+        [LoggerMessage(9, LogLevel.Information, "Unblock all request.")]
+        partial void InformationBlockedRequestEnd();
     }
 }

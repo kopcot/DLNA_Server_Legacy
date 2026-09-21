@@ -8,6 +8,7 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ContentDirectory.Mapping
     public static class BrowseItemMapper
     {
         private const string rootParentId = "0";
+        private static readonly StringBuilder stringBuilder = new();
         #region Container
         public static BrowseItem MapContainer(this DirectoryEntity directory, string ipEndpoint, bool isRootFolder)
         {
@@ -24,10 +25,10 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ContentDirectory.Mapping
         }
         private static string GetTitle(DirectoryEntity directory, bool isRootFolder)
         {
-            StringBuilder sb = new();
+            stringBuilder.Clear();
             if (isRootFolder)
             {
-                return sb.Append(directory.Directory)
+                return stringBuilder.Append(directory.Directory)
                         .Append(" (")
                         .Append(directory.ParentDirectory?.DirectoryFullPath)
                         .Append(')')
@@ -35,7 +36,7 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ContentDirectory.Mapping
             }
             else
             {
-                return sb.Append(directory.Directory)
+                return stringBuilder.Append(directory.Directory)
                     .ToString();
             }
         }
@@ -46,8 +47,8 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ContentDirectory.Mapping
         private static string GetParentID(DirectoryEntity directory, bool isRootFolder) => isRootFolder ? rootParentId : directory.ParentDirectoryId?.ToString() ?? rootParentId;
         private static string GetThumbnailUri(DirectoryEntity directory, string ipEndpoint)
         {
-            StringBuilder sb = new(50);
-            return sb.Append("http://")
+            stringBuilder.Clear();
+            return stringBuilder.Append("http://")
                 .Append(ipEndpoint)
                 .Append("/icon/folder.jpg")
                 .ToString();
@@ -92,10 +93,10 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ContentDirectory.Mapping
         }
         private static string GetTitle(FileEntity file, bool isRootFolder)
         {
-            StringBuilder sb = new();
+            stringBuilder.Clear();
             if (isRootFolder)
             {
-                return sb.Append(file.Title)
+                return stringBuilder.Append(file.Title)
                 .Append(" (")
                         .Append(file.Folder)
                         .Append(')')
@@ -103,7 +104,7 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ContentDirectory.Mapping
             }
             else
             {
-                return sb.Append(file.Title)
+                return stringBuilder.Append(file.Title)
                     .ToString();
             }
         }
@@ -114,8 +115,8 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ContentDirectory.Mapping
         private static string GetDate(FileEntity file) => file.FileCreateDate.ToString("O");
         private static string GetResourceUrl(FileEntity file, string ipEndpoint)
         {
-            StringBuilder sb = new(50);
-            return sb.Append("http://")
+            stringBuilder.Clear();
+            return stringBuilder.Append("http://")
                 .Append(ipEndpoint)
                 .Append("/fileserver/file/")
                 .Append(file.Id.ToString())
@@ -124,33 +125,33 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ContentDirectory.Mapping
 
         private static string GetResourceProtocolInfo(FileEntity file)
         {
-            StringBuilder sb = new(50);
-            _ = sb.Append("http-get:*:")
+            stringBuilder.Clear();
+            _ = stringBuilder.Append("http-get:*:")
                 .Append(file.FileDlnaMime.ToMimeString())
                 .Append(':');
-            _ = sb.Append("DLNA.ORG_PN=")
+            _ = stringBuilder.Append("DLNA.ORG_PN=")
                 .Append(file.FileDlnaProfileName
                     ?? file.FileExtension.ToUpper().Replace(".", ""))
                 .Append(';');
-            _ = sb.Append("DLNA.ORG_OP=")
+            _ = stringBuilder.Append("DLNA.ORG_OP=")
                 .Append(ProtocolInfo.FlagsToString(ProtocolInfo.DlnaOrgOperation.TimeSeekSupported))
                 .Append(';');
-            _ = sb.Append("DLNA.ORG_CI=")
+            _ = stringBuilder.Append("DLNA.ORG_CI=")
                 .Append(ProtocolInfo.EnumToString(ProtocolInfo.DlnaOrgContentIndex.NoSpecificIndex))
                 .Append(';');
-            _ = sb.Append("DLNA.ORG_FLAGS=")
+            _ = stringBuilder.Append("DLNA.ORG_FLAGS=")
                 .Append(file.UpnpClass.ToDlnaMedia() == DlnaMedia.Image
                     ? ProtocolInfo.DefaultFlagsInteractive
                     : ProtocolInfo.DefaultFlagsStreaming);
-            return sb.ToString();
+            return stringBuilder.ToString();
         }
         private static string? GetResourceThumbnailUrl(FileEntity file, string ipEndpoint)
         {
-            var sb = new StringBuilder(50);
+            stringBuilder.Clear();
 
             if (file.ThumbnailId.HasValue)
             {
-                return sb.Append("http://")
+                return stringBuilder.Append("http://")
                     .Append(ipEndpoint)
                     .Append("/fileserver/thumbnail/")
                     .Append(file.ThumbnailId.ToString())
@@ -158,25 +159,25 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ContentDirectory.Mapping
             }
             else
             {
-                _ = sb.Append("http://")
+                _ = stringBuilder.Append("http://")
                     .Append(ipEndpoint);
 
                 return file.UpnpClass.ToDlnaMedia() switch
                 {
-                    DlnaMedia.Image => sb.Append("/fileserver/file/").Append(file.Id.ToString()).ToString(),
-                    DlnaMedia.Video => sb.Append("/icon/fileMovie.jpg").ToString(),
-                    DlnaMedia.Audio => sb.Append("/icon/fileAudio.jpg").ToString(),
+                    DlnaMedia.Image => stringBuilder.Append("/fileserver/file/").Append(file.Id.ToString()).ToString(),
+                    DlnaMedia.Video => stringBuilder.Append("/icon/fileMovie.jpg").ToString(),
+                    DlnaMedia.Audio => stringBuilder.Append("/icon/fileAudio.jpg").ToString(),
                     _ => null,
                 };
             }
         }
         private static string GetResourceThumbnailProtocolInfo(FileEntity file)
         {
-            StringBuilder sb = new();
-            _ = sb.Append("http-get:*:")
+            stringBuilder.Clear();
+            _ = stringBuilder.Append("http-get:*:")
                 .Append(file.Thumbnail?.ThumbnailFileDlnaMime.ToMimeString() ?? "*")
                 .Append(':');
-            _ = sb.Append("DLNA.ORG_PN=")
+            _ = stringBuilder.Append("DLNA.ORG_PN=")
                 .Append((file.Thumbnail?.ThumbnailFileDlnaMime != null && file.Thumbnail?.ThumbnailFileDlnaMime != DlnaMime.Undefined
                     ? file.Thumbnail?.ThumbnailFileDlnaProfileName
                     : file.FileDlnaMime.ToDlnaMedia() == DlnaMedia.Image ? file.FileDlnaProfileName
@@ -184,15 +185,15 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ContentDirectory.Mapping
                     : file.Thumbnail?.ThumbnailFileExtension?.ToUpper().Replace(".", ""))
                     ?? "")
                 .Append(';');
-            _ = sb.Append("DLNA.ORG_OP=")
+            _ = stringBuilder.Append("DLNA.ORG_OP=")
                 .Append(ProtocolInfo.FlagsToString(ProtocolInfo.DlnaOrgOperation.None))
                 .Append(';');
-            _ = sb.Append("DLNA.ORG_CI=")
+            _ = stringBuilder.Append("DLNA.ORG_CI=")
                 .Append(ProtocolInfo.EnumToString(ProtocolInfo.DlnaOrgContentIndex.Thumbnail))
                 .Append(';');
-            _ = sb.Append("DLNA.ORG_FLAGS=")
+            _ = stringBuilder.Append("DLNA.ORG_FLAGS=")
                 .Append(ProtocolInfo.DefaultFlagsInteractive);
-            return sb.ToString();
+            return stringBuilder.ToString();
         }
         private static long GetResourceSize(FileEntity file) => file.FileSizeInBytes;
         private static long GetResourceThumbnailSize(FileEntity file) => file.Thumbnail?.ThumbnailFileSizeInBytes ?? 0;
@@ -211,15 +212,15 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ContentDirectory.Mapping
 
             static string FormatDuration(TimeSpan duration)
             {
-                var sb = new StringBuilder(8);
-                _ = sb.Append((int)(duration.TotalHours))
+                stringBuilder.Clear();
+                _ = stringBuilder.Append((int)(duration.TotalHours))
                     .Append(':')
                     .Append(duration.Minutes.ToString("00"))
                     .Append(':')
                     .Append(duration.Seconds.ToString("00"))
                     .Append('.')
                     .Append(duration.Milliseconds.ToString("000"));
-                return sb.ToString();
+                return stringBuilder.ToString();
             }
         }
         private static string? GetResourceResolution(FileEntity file)
@@ -232,11 +233,11 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ContentDirectory.Mapping
                         metadata.Height.HasValue &&
                             metadata.Width.HasValue)
                         {
-                            StringBuilder sb = new();
-                            _ = sb.Append(metadata.Width.ToString());
-                            _ = sb.Append('x');
-                            _ = sb.Append(metadata.Height.ToString());
-                            return sb.ToString();
+                            stringBuilder.Clear();
+                            _ = stringBuilder.Append(metadata.Width.ToString());
+                            _ = stringBuilder.Append('x');
+                            _ = stringBuilder.Append(metadata.Height.ToString());
+                            return stringBuilder.ToString();
                         }
                     }
                     break;
@@ -339,13 +340,13 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ContentDirectory.Mapping
             switch (file.UpnpClass.ToDlnaMedia())
             {
                 case DlnaMedia.Video:
-                    return string.Intern("video");
+                    return "video";
                 case DlnaMedia.Audio:
-                    return string.Intern("audio");
+                    return "audio";
                 case DlnaMedia.Image:
-                    return string.Intern("image");
+                    return "image";
                 case DlnaMedia.Subtitle:
-                    return string.Intern("subtitle");
+                    return "subtitle";
                 default:
                     break;
             }

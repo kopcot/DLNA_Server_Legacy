@@ -15,7 +15,7 @@ namespace DLNAServer.Helpers.Caching
         /// If <see cref="MemoryCacheEntryOptions.PostEvictionCallbacks"/> is used, consider potential delays caused by their execution 
         /// and/or added delays there
         /// </summary> 
-        /// <param name="memoryCache">The memory cache instance.</param>
+        /// <param name="memoryCacheLocal">The memory cache instance.</param>
         /// <param name="cacheKey">The cache key to be evicted.</param>
         /// <param name="delayEviction">The delay before attempting eviction.</param>
         /// <param name="logger">Logger for error reporting.</param>
@@ -39,12 +39,13 @@ namespace DLNAServer.Helpers.Caching
                     return new CancellationTokenSource();
                 });
 
-            new Task(async () =>
+            _ = Task.Run(async () =>
             {
                 using (evictionControlTokenSource)
                 {
                     try
                     {
+
                         var delay = GetDelay(delayEviction);
 
                         memoryCache.Remove(evictionCacheKey);
@@ -68,10 +69,15 @@ namespace DLNAServer.Helpers.Caching
                         }
 
                     }
-                    catch (ObjectDisposedException)
-                    { }
+                    catch (ObjectDisposedException ex)
+                    {
+                        logger.LogGeneralErrorMessage(ex);
+                    }
                     catch (TaskCanceledException)
-                    { }
+                    {
+                        //who cares?
+                        //LoggerHelper.LogWarningTaskCanceled(logger);
+                    }
                     catch (Exception ex)
                     {
                         logger.LogGeneralErrorMessage(ex);
@@ -85,11 +91,11 @@ namespace DLNAServer.Helpers.Caching
                         }
                     }
                 }
-            }, creationOptions: TaskCreationOptions.RunContinuationsAsynchronously).Start();
+            });
         }
         public static void CancelCacheKeyEviction(this IMemoryCache memoryCache, string cacheKey, ILogger logger)
         {
-            new Task(async () =>
+            _ = Task.Run(async () =>
             {
                 try
                 {
@@ -97,25 +103,23 @@ namespace DLNAServer.Helpers.Caching
 
                     if (EvictionControlTokens.TryGetValue(evictionCacheKey, out var cts))
                     {
-                        cts.Cancel();
+                        await cts.CancelAsync();
 
                         await Task.Delay(TimeSpanValues.TimeSecs1);
 
                         memoryCache.Remove(evictionCacheKey);
                     }
-
                 }
-                catch (ObjectDisposedException)
-                { }
+                catch (ObjectDisposedException) { }
                 catch (Exception ex)
                 {
                     logger.LogGeneralErrorMessage(ex);
                 }
-            }, creationOptions: TaskCreationOptions.RunContinuationsAsynchronously).Start();
+            });
         }
         private static string GetEvictionKey(string cacheKey)
         {
-            return string.Format("_{0} {1}", [string.Intern(nameof(ScheduleCacheKeyEviction)), cacheKey]);
+            return string.Format("_{0} {1}", [nameof(ScheduleCacheKeyEviction), cacheKey]);
         }
         private static TimeSpan GetDelay(TimeSpan cacheDuration)
         {

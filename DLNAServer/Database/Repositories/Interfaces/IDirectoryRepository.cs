@@ -13,5 +13,9 @@ namespace DLNAServer.Database.Repositories.Interfaces
         Task<ReadOnlyMemory<DirectoryEntity>> GetAllByDirectoryDepthAsync(int depth, bool useCachedResult = true);
         Task<ReadOnlyMemory<DirectoryEntity>> GetAllByDirectoryDepthAsync(int depth, int skip, int take, bool useCachedResult = true);
         Task<ReadOnlyMemory<DirectoryEntity>> GetAllByPathFullNamesAsync(IEnumerable<string> pathFullNames, bool asNoTracking = false, bool useCachedResult = true);
+        /// <summary>
+        /// Retrieves all existing file full path names that match the specified <paramref name="pathFullNames"/> collection as <see cref="DirectoryEntity.DirectoryFullPath"/>
+        /// </summary>
+        Task<ReadOnlyMemory<string>> GetAllExistingByPathFullNamesAsync(IEnumerable<string> pathFullNames, bool useCachedResult = true);
     }
 }

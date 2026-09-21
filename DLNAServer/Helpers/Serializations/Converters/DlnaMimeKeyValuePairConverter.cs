@@ -5,7 +5,7 @@ using System.Text.Json.Serialization;
 
 namespace DLNAServer.Helpers.Serializations.Converters
 {
-    public class DlnaMimeKeyValuePairConverter : JsonConverter<KeyValuePair<DlnaMime, string?>>
+    public sealed class DlnaMimeKeyValuePairConverter : JsonConverter<KeyValuePair<DlnaMime, string?>>
     {
         public override KeyValuePair<DlnaMime, string?> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
         {

@@ -6,7 +6,7 @@ using System.Text;
 
 namespace DLNAServer.Database.Interceptors
 {
-    public class PerformanceInterceptor : DbCommandInterceptor
+    public sealed class PerformanceInterceptor : DbCommandInterceptor
     {
         private readonly Logger _Logger;
         private readonly ServerConfig _serverConfig;

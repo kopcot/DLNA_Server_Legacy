@@ -61,5 +61,13 @@
         partial void WarningNoAnyThumbnailFile(int fileEntityCount);
         [LoggerMessage(11, LogLevel.Information, "Updated parent directories for {fileEntitiesCount} file(s) and {directoryEntitiesCount} directory(ies).")]
         partial void InformationUpdatedParentDirectories(int fileEntitiesCount, int directoryEntitiesCount);
+        [LoggerMessage(12, LogLevel.Information, "{count} directory(ies) added to database")]
+        partial void InformationDirectoriesAddingFinished(int count);
+        [LoggerMessage(13, LogLevel.Information, "{count} file(s) added to database")]
+        partial void InformationFilesAddingFinished(int count);
+        [LoggerMessage(14, LogLevel.Warning, "Files already exists in database:\n{existingFiles}")]
+        partial void WarningExistingFilesInDatabase(string existingFiles);
+        [LoggerMessage(15, LogLevel.Warning, "Directories already exists in database:\n{existingDirectories}")]
+        partial void WarningExistingDirectoriesInDatabase(string existingDirectories);
     }
 }

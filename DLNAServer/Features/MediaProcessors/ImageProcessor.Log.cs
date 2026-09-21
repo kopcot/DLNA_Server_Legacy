@@ -10,5 +10,7 @@ namespace DLNAServer.Features.MediaProcessors
         partial void DebugCreateThumbnail(string file);
         [LoggerMessage(3, LogLevel.Error, "Unable to create SKCodec for file '{fileFullPath}'. Codec result: {codecResult}")]
         partial void ErrorSKCodec(string fileFullPath, SKCodecResult codecResult);
+        [LoggerMessage(5, LogLevel.Warning, "Set failed thumbnail as checked for file: '{file}'")]
+        partial void WarningSetThumbnailFailed(string file);
     }
 }

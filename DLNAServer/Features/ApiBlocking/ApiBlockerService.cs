@@ -2,7 +2,7 @@
 
 namespace DLNAServer.Features.ApiBlocking
 {
-    public class ApiBlockerService : IApiBlockerService
+    public sealed class ApiBlockerService : IApiBlockerService
     {
         public bool IsBlocked { get; private set; }
         public string Reason { get; private set; } = string.Empty;

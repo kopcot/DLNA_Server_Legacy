@@ -54,7 +54,10 @@ namespace DLNAServer.Features.MediaProcessors
 
                 if (!isDownloaded)
                 {
+                    InformationDownloadingLatestVersion(executablesPath);
                     await FFmpegDownloader.GetLatestVersion(FFmpegVersion.Official, executablesPath).WaitAsync(TimeSpanValues.TimeMin15);
+                    InformationDownloadingLatestVersionFinished();
+
                     files = directoryInfo.EnumerateFiles();
                     ffmpeg = files.First(f => f.Name.Equals(ffmpegFileName, StringComparison.OrdinalIgnoreCase));
                     ffprobe = files.First(f => f.Name.Equals(ffprobeFileName, StringComparison.OrdinalIgnoreCase));

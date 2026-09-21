@@ -13,8 +13,9 @@ namespace DLNAServer.Database.Entities
     [Index(propertyName: nameof(LC_FileExtension), IsUnique = false)]
     [Index(propertyName: nameof(DirectoryId), IsUnique = false)]
     [Index(propertyName: nameof(ThumbnailId), IsUnique = true)]
+    [Index(propertyName: nameof(DirectoryId), nameof(LC_FilePhysicalFullPath), IsUnique = true)]
     [Table(nameof(DlnaDbContext.FileEntities))] // needed as in DlnaDbContext is in plural
-    public class FileEntity : BaseEntity
+    public sealed class FileEntity : BaseEntity
     {
         // File
         [MaxLength(4096, ErrorMessage = $"File name cannot exceed 4096 characters. Property {nameof(FileName)}")]
@@ -35,7 +36,7 @@ namespace DLNAServer.Database.Entities
         public string LC_Folder { get; set; }
         [ForeignKey(nameof(Directory))]
         public Guid? DirectoryId { get; set; }
-        public virtual DirectoryEntity? Directory { get; set; }
+        public DirectoryEntity? Directory { get; set; }
         public DlnaMime FileDlnaMime { get; set; }
         [MaxLength(128, ErrorMessage = $"Dlna Profile Name cannot exceed 128 characters. Property {nameof(FileDlnaProfileName)}")]
         [InternString]

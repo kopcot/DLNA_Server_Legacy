@@ -1,9 +1,7 @@
-﻿
-using DLNAServer.Common;
+﻿using DLNAServer.Common;
 using DLNAServer.Configuration;
 using DLNAServer.Features.FileWatcher.Interfaces;
 using DLNAServer.Helpers.Logger;
-using System.Collections.Concurrent;
 
 namespace DLNAServer.Features.FileWatcher
 {
@@ -13,8 +11,6 @@ namespace DLNAServer.Features.FileWatcher
         private readonly IServiceScopeFactory _serviceScopeFactory;
         private readonly ServerConfig _serverConfig;
         private readonly IFileWatcherHandler _fileWatcherHandler;
-        private readonly static ConcurrentDictionary<string, (int Count, SemaphoreSlim Semaphore)> _fileEventsInProgress = new();
-
         public FileWatcherService(
             ILogger<FileWatcherService> logger,
             ServerConfig serverConfig,
@@ -33,47 +29,62 @@ namespace DLNAServer.Features.FileWatcher
             {
                 InformationStarting();
 
-                while (!stoppingToken.IsCancellationRequested)
+                var reader = _fileWatcherHandler.FileEventChannelReader;
+
+                Guid guid;
+
+                while (await reader.WaitToReadAsync(stoppingToken))
                 {
-                    while (!stoppingToken.IsCancellationRequested // needed for stopping application, when events are still pending
-                        && !_fileWatcherHandler.FileEventQueue.IsEmpty)
+                    guid = Guid.NewGuid();
+
+                    InformationStartedCheckingRaisedEvents(guid);
+
+                    while (reader.TryRead(out var fileEvent))
                     {
-                        if (_fileWatcherHandler.FileEventQueue.TryDequeue(out var fileEvent))
+                        if (stoppingToken.IsCancellationRequested)
                         {
-                            var eventStartedTime = DateTime.UtcNow - fileEvent.eventTimeUTC;
-                            if (eventStartedTime < TimeSpanValues.TimeSecs5)
-                            {
-                                await Task.Delay(eventStartedTime.Add(TimeSpanValues.TimeSecs1), stoppingToken);
-                            }
-                            await ExecuteEventHandlerAsync(fileEvent.fileFullPath, fileEvent.fileFullPathOld, fileEvent.changeType);
+                            LoggerHelper.InformationCancellationRequested(_logger, $"File full path: {fileEvent.fileFullPath}");
+                            stoppingToken.ThrowIfCancellationRequested();
                         }
-                        else
+                        DebugActualRaisedEvent(fileEvent.fileFullPath, fileEvent.changeType, reader.CanCount ? reader.Count : -999);
+
+                        var eventStartedTime = DateTime.UtcNow - fileEvent.eventTimeUTC;
+                        if (eventStartedTime < TimeSpanValues.TimeSecs30)
                         {
-                            WarningUnableToDequeueEvent(_fileWatcherHandler.FileEventQueue.Count);
+                            await Task.Delay(TimeSpanValues.TimeSecs30, stoppingToken);
                         }
+                        await ExecuteEventHandlerAsync(fileEvent.fileFullPath, fileEvent.fileFullPathOld, fileEvent.changeType, stoppingToken);
                     }
 
-                    await Task.Delay(TimeSpanValues.TimeSecs5, stoppingToken);
+                    InformationFinishedActiveRaisedEvents(guid);
                 }
             }
             catch (TaskCanceledException)
             {
+                //who cares? 
                 LoggerHelper.LogWarningTaskCanceled(_logger);
+            }
+            catch (OperationCanceledException)
+            {
+                //channel-reader canceled by CancellationToken
+                LoggerHelper.LogWarningOperationCanceled(_logger);
             }
             catch (Exception ex)
             {
                 _logger.LogGeneralErrorMessage(ex);
             }
+
+            InformationFinishedCheckingRaisedEvents();
         }
         public override async Task StopAsync(CancellationToken cancellationToken)
         {
             try
             {
-                _fileEventsInProgress.Clear();
                 await base.StopAsync(cancellationToken);
             }
             catch (TaskCanceledException)
             {
+                //who cares? 
                 LoggerHelper.LogWarningTaskCanceled(_logger);
             }
             catch (Exception ex)
@@ -102,10 +113,17 @@ namespace DLNAServer.Features.FileWatcher
         private async Task ExecuteEventHandlerAsync(
             string fullPath,
             string? fullPathOld,
-            WatcherChangeTypes changeType
+            WatcherChangeTypes changeType,
+            CancellationToken cancellationToken
             )
         {
             DateTime eventTimestamp = DateTime.Now;
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                LoggerHelper.InformationCancellationRequested(_logger, $"File full path: {fullPath}");
+                cancellationToken.ThrowIfCancellationRequested();
+            }
 
             if (CheckPathForExclude(changeType, fullPath))
             {
@@ -186,19 +204,6 @@ namespace DLNAServer.Features.FileWatcher
         }
         public static Task TerminateAsync()
         {
-            foreach (var fileLocks in _fileEventsInProgress)
-            {
-                try
-                {
-                    _ = (fileLocks.Value.Semaphore?.Release());
-                }
-                catch
-                {
-                    // no exeption during stopping appllication
-                }
-            }
-            _fileEventsInProgress.Clear();
-
             return Task.CompletedTask;
         }
     }

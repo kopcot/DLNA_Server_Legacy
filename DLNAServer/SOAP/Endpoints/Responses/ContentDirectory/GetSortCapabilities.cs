@@ -6,7 +6,7 @@ namespace DLNAServer.SOAP.Endpoints.Responses.ContentDirectory
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider adding the 'required' modifier or declaring as nullable.
     [MessageContract(WrapperName = "GetSortCapabilitiesResponse")]
     [XmlRoot(ElementName = "GetSortCapabilitiesResponse")]
-    public class GetSortCapabilities
+    public sealed class GetSortCapabilities
     {
         [XmlElement(ElementName = "SearchCaps")]
         public string SortCaps { get; set; }

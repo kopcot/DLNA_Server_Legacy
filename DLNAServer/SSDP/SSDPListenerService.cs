@@ -123,10 +123,12 @@ namespace DLNAServer.SSDP
             }
             catch (TaskCanceledException)
             {
+                //who cares? 
                 LoggerHelper.LogWarningTaskCanceled(_logger);
             }
             catch (OperationCanceledException)
             {
+                //who cares? 
                 LoggerHelper.LogWarningOperationCanceled(_logger);
             }
             catch (Exception ex)
@@ -203,14 +205,15 @@ namespace DLNAServer.SSDP
 
                 // Convert the response to bytes  
                 var message = sb.ToString(); // only one ToString call
-                var byteCount = decoder.GetByteCount(message);
+                var byteCount = decoder.GetByteCount(message.AsSpan());
+                // possible to use ArrayPool - responseBytes are not stored for later usage 
                 byte[] responseBytes = responseBytesPool.Rent(byteCount);
                 try
                 {
-                    _ = decoder.GetBytes(message, 0, message.Length, responseBytes, 0);
+                    var byteWrittenCount = decoder.GetBytes(message.AsSpan(), responseBytes);
 
                     // Send SSDP response
-                    _ = await udpClient.SendAsync(responseBytes, byteCount, remoteEndPoint);
+                    _ = await udpClient.SendAsync(responseBytes, byteWrittenCount, remoteEndPoint);
                 }
                 finally
                 {

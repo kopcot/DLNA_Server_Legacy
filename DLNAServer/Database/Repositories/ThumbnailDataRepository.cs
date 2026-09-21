@@ -5,7 +5,7 @@ using Microsoft.Extensions.Caching.Memory;
 
 namespace DLNAServer.Database.Repositories
 {
-    public class ThumbnailDataRepository : BaseRepository<ThumbnailDataEntity>, IThumbnailDataRepository
+    public sealed class ThumbnailDataRepository : BaseRepository<ThumbnailDataEntity>, IThumbnailDataRepository
     {
         public ThumbnailDataRepository(DlnaDbContext dbContext, IMemoryCache memoryCache, ILogger<ThumbnailDataRepository> logger)
             : base(dbContext, memoryCache, logger, nameof(ThumbnailDataRepository))

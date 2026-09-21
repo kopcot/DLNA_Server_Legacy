@@ -76,12 +76,13 @@ namespace DLNAServer.SSDP
                         }
 
                         const string notification = "ssdp:alive";
+                        UPNPDevice? device;
 
                         while (!cancellationToken.IsCancellationRequested && isMessageSend)
                         {
                             for (int i = 0; i < _upnpDevices.AllUPNPDevices.Length; i++)
                             {
-                                UPNPDevice? device = _upnpDevices.AllUPNPDevices[i];
+                                device = _upnpDevices.AllUPNPDevices[i];
                                 isMessageSend &= await SendMessage(udpClientSender, device, _ip.MulticastEndPoint, _ip.SSDP_PORT, notification); // DLNA device discovery
                                 isMessageSend &= await SendMessage(udpClientSender, device, _ip.BroadcastEndPoint, _ip.SSDP_PORT, notification); // General announcements 
 
@@ -109,6 +110,7 @@ namespace DLNAServer.SSDP
             }
             catch (TaskCanceledException)
             {
+                //who cares? 
                 LoggerHelper.LogWarningTaskCanceled(_logger);
             }
             catch (SocketException ex)
@@ -146,6 +148,7 @@ namespace DLNAServer.SSDP
             }
             catch (TaskCanceledException)
             {
+                //who cares? 
                 LoggerHelper.LogWarningTaskCanceled(_logger);
             }
             catch (SocketException ex)
@@ -157,13 +160,14 @@ namespace DLNAServer.SSDP
                 _logger.LogGeneralErrorMessage(ex);
             }
         }
+        private readonly StringBuilder sb = new();
         private async Task<bool> SendMessage(UdpClient udpClient, UPNPDevice device, IPEndPoint receiverEndPoint, int ssdpPort, string notificationSubtype)
         {
             try
             {
-                var messageData = messageDataStored.GetOrAdd((device, receiverEndPoint, ssdpPort, notificationSubtype, _serverConfig.DlnaServerSignature), static (key) =>
+                var messageData = messageDataStored.GetOrAdd((device, receiverEndPoint, ssdpPort, notificationSubtype, _serverConfig.DlnaServerSignature), key =>
                 {
-                    StringBuilder sb = new();
+                    sb.Clear();
                     _ = sb.Append("NOTIFY * HTTP/1.1\r\n");
                     _ = sb.Append("HOST: ").Append(key.address.ToString()).Append("\r\n");
                     _ = sb.Append("CACHE-CONTROL: max-age=600\r\n");
@@ -174,7 +178,15 @@ namespace DLNAServer.SSDP
                     _ = sb.Append("USN: ").Append(key.device.USN).Append("\r\n");
                     _ = sb.Append("\r\n");
 
-                    return Encoding.UTF8.GetBytes(sb.ToString());
+                    var message = sb.ToString(); // only one ToString call
+                    var byteCount = Encoding.UTF8.GetByteCount(message.AsSpan());
+
+                    // NOT possible to use ArrayPool - responseBytes are stored for later usage 
+                    byte[] responseBytes = GC.AllocateUninitializedArray<byte>(byteCount);
+
+                    _ = Encoding.UTF8.GetBytes(message.AsSpan(), responseBytes);
+
+                    return responseBytes;
                 });
 
                 _ = await udpClient.SendAsync(messageData, messageData.Length, receiverEndPoint);

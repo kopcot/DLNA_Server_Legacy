@@ -1,7 +1,5 @@
 ﻿using DLNAServer.Common;
 using DLNAServer.Configuration;
-using DLNAServer.Database.Entities;
-using DLNAServer.Database.Repositories.Interfaces;
 using DLNAServer.Features.Cache.Interfaces;
 using DLNAServer.Features.PhysicalFile.Interfaces;
 using DLNAServer.Helpers.Caching;
@@ -18,55 +16,31 @@ namespace DLNAServer.Features.Cache
         private readonly ServerConfig _serverConfig;
         private readonly IMemoryCache MemoryCache;
         private readonly IFileService FileService;
-        private readonly IServiceScopeFactory _serviceScopeFactory;
         private readonly static ConcurrentDictionary<string, SemaphoreSlim> cachingFilesInProgress = new();
         private readonly static SemaphoreSlim postEvictionCallbackInProgress = new(1, 1);
-        private readonly static TimeSpan defaultExpiration = TimeSpanValues.TimeMin1;
+        private readonly static TimeSpan _defaultExpiration = TimeSpanValues.TimeMin1;
 
         public FileMemoryCacheManager(
             ServerConfig serverConfig,
             IMemoryCache memoryCache,
-            IServiceScopeFactory serviceScopeFactory,
             ILogger<FileMemoryCacheManager> logger,
             IFileService fileService)
         {
             MemoryCache = memoryCache;
-            _serviceScopeFactory = serviceScopeFactory;
             _logger = logger;
             _serverConfig = serverConfig;
             FileService = fileService;
         }
-        public void CacheFileInBackground(FileEntity file, TimeSpan slidingExpiration)
-        {
-            Task backgroundCaching = new(async () =>
-            {
-                using (var scope = _serviceScopeFactory.CreateScope())
-                {
-                    slidingExpiration = slidingExpiration > defaultExpiration
-                        ? slidingExpiration
-                        : defaultExpiration;
-
-                    (var isCachedSuccessful, _) = await CacheFileAndReturnAsync(file.FilePhysicalFullPath, slidingExpiration, true);
-
-                    if (file.FileUnableToCache != !isCachedSuccessful)
-                    {
-                        var fileRepository = scope.ServiceProvider.GetRequiredService<IFileRepository>();
-
-                        var fileCached = await fileRepository.GetByIdAsync(file.Id, asNoTracking: false, useCachedResult: true);
-                        fileCached!.FileUnableToCache = !isCachedSuccessful;
-                        _ = await fileRepository.SaveChangesAsync();
-                    }
-
-                    DebugBackgroundFileCachedDone(file!.FilePhysicalFullPath);
-                }
-            }, creationOptions: TaskCreationOptions.RunContinuationsAsynchronously);
-            backgroundCaching.Start();
-        }
         public async Task<(bool isCachedSuccessful, ReadOnlyMemory<byte> file)> CacheFileAndReturnAsync(
             string filePath,
             TimeSpan slidingExpiration,
-            bool checkExistingInCache = true)
+            bool checkExistingInCache = true,
+            CancellationToken cancellationToken = default)
         {
+            slidingExpiration = slidingExpiration > _defaultExpiration
+                ? slidingExpiration
+                : _defaultExpiration;
+
             var fileLock = cachingFilesInProgress.GetOrAdd(filePath, new SemaphoreSlim(1, 1));
 
             DebugFileCacheStarted(filePath);
@@ -89,7 +63,10 @@ namespace DLNAServer.Features.Cache
                 {
                     return (false, ReadOnlyMemory<byte>.Empty);
                 }
-                var cachedData = await FileService.ReadFileAsync(filePath, (long)_serverConfig.MaxSizeOfFileForUseMemoryCacheInMBytes * (1024 * 1024));
+                var cachedData = await FileService.ReadFileAsync(
+                    filePath, 
+                    (long)_serverConfig.MaxSizeOfFileForUseMemoryCacheInMBytes * (1024 * 1024),
+                    cancellationToken);
                 if (cachedData == null)
                 {
                     return (false, ReadOnlyMemory<byte>.Empty);
@@ -169,23 +146,27 @@ namespace DLNAServer.Features.Cache
             {
                 MemoryCache.CancelCacheKeyEviction((string)key, _logger);
 
-                Task clearMemory = new(async () =>
-                {
-                    await Task.Delay(TimeSpanValues.TimeSecs30);
+                GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
 
-                    _ = await postEvictionCallbackInProgress.WaitAsync(TimeSpanValues.TimeMin30);
-
-                    GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
-                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
-                    GC.WaitForPendingFinalizers();
-                    GC.Collect();
-
-                    await Task.Delay(TimeSpanValues.TimeSecs1);
-
-                    _ = postEvictionCallbackInProgress.Release();
-                });
-                clearMemory.Start();
+                _ = Task.Run(ClearGC);
             });
+        }
+        private static async Task ClearGC()
+        {
+            await Task.Delay(TimeSpanValues.TimeSecs30);
+
+            _ = await postEvictionCallbackInProgress.WaitAsync(TimeSpanValues.TimeMin30);
+
+            await Task.Delay(TimeSpanValues.TimeSecs1);
+
+            GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+
+            await Task.Delay(TimeSpanValues.TimeSecs1);
+
+            _ = postEvictionCallbackInProgress.Release();
         }
         public void EvictSingleFile(string filePath)
         {
@@ -208,12 +189,18 @@ namespace DLNAServer.Features.Cache
         }
         public Task TerminateAsync()
         {
+            foreach (var cachingFile in cachingFilesInProgress)
+            {
+                cachingFile.Value.Dispose();
+            }
+
             cachingFilesInProgress.Clear();
 
             if (MemoryCache is MemoryCache memoryCache)
             {
                 memoryCache.Compact(100);
                 memoryCache.Clear();
+                memoryCache.Compact(100);
             }
             MemoryCache.Dispose();
 

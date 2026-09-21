@@ -12,7 +12,7 @@ namespace DLNAServer.Database.Entities
     [Index(propertyName: nameof(ThumbnailFilePhysicalFullPath), IsUnique = true)]
     [Index(propertyName: nameof(LC_ThumbnailFilePhysicalFullPath), IsUnique = true)]
     [Table(nameof(DlnaDbContext.ThumbnailEntities))] // needed as in DlnaDbContext is in plural 
-    public class ThumbnailEntity : BaseEntity
+    public sealed class ThumbnailEntity : BaseEntity
     {
         [MaxLength(4096, ErrorMessage = $"File full path cannot exceed 4096 characters. Property {nameof(FilePhysicalFullPath)}")]
         [StringCache]

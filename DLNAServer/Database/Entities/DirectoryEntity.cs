@@ -10,8 +10,9 @@ namespace DLNAServer.Database.Entities
     [Index(propertyName: nameof(LC_DirectoryFullPath), IsUnique = true)]
     [Index(propertyName: nameof(ParentDirectoryId), IsUnique = false)]
     [Index(propertyName: nameof(Depth), IsUnique = false)]
+    [Index(propertyName: nameof(ParentDirectoryId), nameof(LC_DirectoryFullPath), IsUnique = false)]
     [Table(nameof(DlnaDbContext.DirectoryEntities))] // needed as in DlnaDbContext is in plural
-    public class DirectoryEntity : BaseEntity
+    public sealed class DirectoryEntity : BaseEntity
     {
         [MaxLength(4096, ErrorMessage = $"Directory full path cannot exceed 4096 characters. Property {nameof(DirectoryFullPath)}")]
         [StringCache]
@@ -31,7 +32,7 @@ namespace DLNAServer.Database.Entities
         public string LC_Directory { get; set; }
         [ForeignKey("ParentDirectory")]
         public Guid? ParentDirectoryId { get; set; }
-        public virtual DirectoryEntity? ParentDirectory { get; set; }
+        public DirectoryEntity? ParentDirectory { get; set; }
         public int Depth { get; set; }
     }
 #pragma warning restore CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider adding the 'required' modifier or declaring as nullable.

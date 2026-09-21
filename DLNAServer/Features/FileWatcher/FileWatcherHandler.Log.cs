@@ -8,5 +8,7 @@
         partial void WarningDirectoryNotExists(string sourceFolder);
         [LoggerMessage(3, LogLevel.Debug, "Started watching path - '{pathToWatch}'")]
         partial void DebugStartedWatchingPath(string pathToWatch);
+        [LoggerMessage(4, LogLevel.Debug, "Raised event from watched path '{pathToWatch}' as '{eventChangeType}' for '{path}'")]
+        partial void DebugRaisedEvent(string pathToWatch, string path, WatcherChangeTypes eventChangeType);
     }
 }

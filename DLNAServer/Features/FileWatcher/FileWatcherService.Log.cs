@@ -14,5 +14,13 @@
         partial void DebugEventFilteredForExtensionOrNotDirectory(WatcherChangeTypes changeType, string fullPath);
         [LoggerMessage(6, LogLevel.Warning, "Unable to dequeue file event. File events count: {fileEventCount}")]
         partial void WarningUnableToDequeueEvent(int fileEventCount);
+        [LoggerMessage(7, LogLevel.Debug, "Actual '{changeType}' event in progress for '{fullPath}'\nTotal raised event in queue: {fileEventCount}")]
+        partial void DebugActualRaisedEvent(string fullPath, WatcherChangeTypes changeType, int fileEventCount);
+        [LoggerMessage(8, LogLevel.Information, "Finished all active file raised events. Job Id: '{guid}'. Waiting for a next.")]
+        partial void InformationFinishedActiveRaisedEvents(Guid guid);
+        [LoggerMessage(9, LogLevel.Information, "Started file raised events. Job Id: '{guid}'.")]
+        partial void InformationStartedCheckingRaisedEvents(Guid guid);
+        [LoggerMessage(10, LogLevel.Information, "Finished checking file raised events.")]
+        partial void InformationFinishedCheckingRaisedEvents();
     }
 }

@@ -9,6 +9,12 @@
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
     <GarbageCollectionAdaptationMode>1</GarbageCollectionAdaptationMode>
     <Title>$(AssemblyName)</Title>
+	  <SelfContained>true</SelfContained>
+	  <InvariantGlobalization>true</InvariantGlobalization>
+	  <!-- Optional: reduce size -->
+	  <StripSymbols>true</StripSymbols>
+	  <!-- Optional: smaller executable -->
+	  <!-- ADD END -->
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,26 +28,28 @@
     <EmbeddedResource Remove="Resources\executables\**" />
     <None Remove="Resources\executables\**" />
     <Content Remove="Resources\executables\**" />
+    <Compile Include="..\DLNAServer.WebApp\Components\Pages\DlnaContent.razor.cs" Link="DlnaContent.razor.cs" />
     <Folder Include="Resources\executables\" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.HighPerformance" Version="8.4.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.6" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="9.0.6">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.10" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="9.0.10">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="9.0.6" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="9.0.10" />
     <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
-    <PackageReference Include="SkiaSharp" Version="3.119.0" />
-    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="3.119.0" />
-    <PackageReference Include="SoapCore" Version="1.2.1.8" />
-    <PackageReference Include="System.Linq.Async" Version="6.0.1" />
-    <PackageReference Include="System.Security.Cryptography.Xml" Version="9.0.6" />
-    <PackageReference Include="Xabe.FFmpeg" Version="6.0.1" />
-    <PackageReference Include="Xabe.FFmpeg.Downloader" Version="6.0.1" />
+    <PackageReference Include="SkiaSharp" Version="3.119.1" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="3.119.1" />
+    <PackageReference Include="SoapCore" Version="1.2.1.11" />
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
+    <PackageReference Include="System.Linq.Async" Version="6.0.3" />
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="9.0.16" />
+    <PackageReference Include="Xabe.FFmpeg" Version="6.0.2" />
+    <PackageReference Include="Xabe.FFmpeg.Downloader" Version="6.0.2" />
   </ItemGroup>
 
   <ItemGroup>
@@ -103,5 +111,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content> 
   </ItemGroup>
+
+	<PropertyGroup>
+		<NoWarn>$(NoWarn);NETSDK1188</NoWarn>
+	</PropertyGroup>
 
 </Project>

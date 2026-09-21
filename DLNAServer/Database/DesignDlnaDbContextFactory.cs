@@ -9,7 +9,7 @@ namespace DLNAServer.Database
     /// This is used by Entity Framework Core tooling (e.g., for migrations) to configure 
     /// the database context outside the main application's dependency injection system.
     /// </summary>
-    public class DesignDlnaDbContextFactory : IDesignTimeDbContextFactory<DlnaDbContext>
+    public sealed class DesignDlnaDbContextFactory : IDesignTimeDbContextFactory<DlnaDbContext>
     {
         public DlnaDbContext CreateDbContext(string[] args)
         {
